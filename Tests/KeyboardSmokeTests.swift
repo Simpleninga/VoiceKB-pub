@@ -1236,4 +1236,16 @@ final class KeyboardSmokeTests: XCTestCase {
         for c in ["n", "i", "h", "a", "o"] { tap(vc2, c) }
         XCTAssertFalse(all(vc2.view).compactMap { ($0 as? UIButton)?.currentTitle }.contains { $0.unicodeScalars.contains { $0.value >= 0x1F300 } }, "nihao 不该冒表情")
     }
+
+    /// 简拼（二期）：只打每个字的首字母，整句出候选（字数 = 字母数）；打全拼的句子不受影响
+    func testAbbreviationSentence() {
+        let vc = makeKeyboard()
+        for c in ["n", "c", "f", "l", "m"] { tap(vc, c) }
+        let titles = all(vc.view).compactMap { ($0 as? UIButton)?.currentTitle }
+        XCTAssertTrue(titles.contains { $0.count == 5 && $0.unicodeScalars.allSatisfy { (0x4E00...0x9FFF).contains($0.value) } }, "ncflm 应该有一条 5 个字的整句：\(titles.prefix(12))")
+        let vc2 = makeKeyboard()
+        for c in "nihao".map({ String($0) }) { tap(vc2, c) }
+        let t2 = all(vc2.view).compactMap { ($0 as? UIButton)?.currentTitle }
+        XCTAssertTrue(t2.contains("你好"), "全拼照旧：\(t2.prefix(8))")
+    }
 }

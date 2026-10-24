@@ -461,6 +461,44 @@ def fuzz_edges(D, b, i, end, mask):
     return sorted((p, k, pen) for (p, k), pen in out.items())
 
 
+# ---- 简拼 / 混拼（二期，2026-10-25）----
+# 输入只打每个字的首字母（ncflm → 你吃饭了吗）、或者一部分字打全拼一部分字只打首字母（混拼）：词格里加「首字母边」：
+# 一个字母 = 这个首字母下最常用的单字；2~5 个字母 = 首字母正好是它们的词（词典的简拼表，每个键最多 25 条，这里取前 ABBR_WORDS 个）。
+# 每缩写一个字罚 PEN_ABBR，让打全拼能成句的输入不被抢（有全拼的路径永远比缩写少付罚分）。
+# 只在「普通词格（含纠错边）盖不住整串输入」时才加（run_dp(abbr=True) 重跑一遍）：能正常解析 / 纠错的输入一个字都不变。
+PEN_ABBR = int(2.0 * 2048)
+ABBR_MAX = 5          # 一段首字母最多几个
+ABBR_CHARS = 25       # 单个首字母给几个最常用的字
+ABBR_WORDS = 12       # 多个首字母给简拼表里前几个词
+_ABBR_TAB = None
+
+
+def abbr_chars(D):
+    """首字母（字节）→ 这个首字母下最常用的单字的词条序号（权重大 → 小，序号小 → 大）"""
+    global _ABBR_TAB
+    if _ABBR_TAB is None:
+        by = {}
+        for i in range(D.n):
+            w, q = D.entry_raw(i)
+            if len(w) == 1 and "\u4e00" <= w <= "\u9fff":
+                by.setdefault(D.keys[i][0], []).append((-q, i))
+        _ABBR_TAB = {k: [i for _, i in sorted(v)[:ABBR_CHARS]] for k, v in by.items()}
+    return _ABBR_TAB
+
+
+def abbr_edges(D, b, i, lim):
+    """从 b[i] 起（不越过 lim）的首字母段：[(吃掉几个字母, [词条序号…])]"""
+    out = []
+    for L in range(1, min(ABBR_MAX, lim - i) + 1):
+        seg = b[i:i + L]
+        if not all(97 <= c <= 122 for c in seg):
+            break
+        es = abbr_chars(D).get(seg[0], []) if L == 1 else D.initials(seg)[:ABBR_WORDS]
+        if es:
+            out.append((L, es))
+    return out
+
+
 # ---- 整句纠错：词格里给每段拼音加「改一处就成词」的边（2026-10-24）----
 # 一处 = 邻键替换 / 多打一个字母 / 漏打一个字母（段尾只认漏打 g、h：an→ang、z→zh）/ 相邻两个字母对调；段长 2~14 个字母。
 # 这样整句里夹一个错键也能连成句（原来纠错只看整个输入串，长句里错一个键就整句认不出）。带罚分交给语言模型挑：
@@ -535,7 +573,7 @@ def typo_edges(D, b, i, end):
     return sorted((p, k, pen) for (p, k), pen in out.items())
 
 
-def run_dp(D, b, cuts, lm, ctx, user=None, ctxw=None, t9=False):
+def run_dp(D, b, cuts, lm, ctx, user=None, ctxw=None, t9=False, abbr=False):
     """整句动态规划（带二元语法）：每个位置、「改没改过拼音」两路各留 BEAM 条「最后一个词不同」的最优路径。
     返回 beams：beams[j] 是盖住 b[:j] 的路径表，按（代价, 路径）升序；状态 = (代价, 上一个词, 路径, 改过没有)，
     路径 = ((词条序号, 字母数), …)。改过的那条边，词条的键和原样的拼音不一样（显示纠正后的拼音就拿词条的键拼）。
@@ -586,6 +624,9 @@ def run_dp(D, b, cuts, lm, ctx, user=None, ctxw=None, t9=False):
         if FUZZ:
             for p, k, pen in fuzz_edges(D, b, i, lim, FUZZ):
                 extend(i, i + p, list(D.exact(k))[:PER_KEY], pen)
+        if abbr:
+            for L, es in abbr_edges(D, b, i, lim):
+                extend(i, i + L, es, PEN_ABBR * L)
     beams[n] = prune(beams[n])
     return beams
 
@@ -889,6 +930,8 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
         return []
     ctx_id = lm.id(ctx) if lm and ctx else -1
     beams = run_dp(D, b, cuts, lm, ctx_id, user, ctx)
+    if not beams[n] and n >= 2:       # 普通词格盖不住整串（含纠错）：当简拼 / 混拼再试一遍
+        beams = run_dp(D, b, cuts, lm, ctx_id, user, ctx, abbr=True)
     pl = user.plist() if user else []
 
     def word_of(e):

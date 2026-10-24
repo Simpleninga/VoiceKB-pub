@@ -115,6 +115,16 @@ final class PinyinDict {
         return lo..<hi
     }
 
+    /// 这个词条的词是不是正好一个汉字（U+4E00~U+9FFF，UTF-8 三个字节）
+    func isSingleHan(_ i: Int) -> Bool {
+        let e = ent(i)
+        guard e.load(fromByteOffset: 9, as: UInt8.self) == 3 else { return false }
+        let wo = Int(e.loadUnaligned(fromByteOffset: 4, as: UInt32.self))
+        let p = (base + wordOff + wo).assumingMemoryBound(to: UInt8.self)
+        let cp = (Int(p[0] & 0x0F) << 12) | (Int(p[1] & 0x3F) << 6) | Int(p[2] & 0x3F)
+        return cp >= 0x4E00 && cp <= 0x9FFF
+    }
+
     /// 简拼键等于 k 的词条序号（权重从大到小）
     func initials(_ k: UnsafePointer<UInt8>, _ kl: Int, limit: Int) -> [Int] {
         @inline(__always) func row(_ i: Int) -> (UnsafePointer<UInt8>, Int, Int) {
@@ -389,6 +399,36 @@ final class PinyinEngine {
         walk(i, 0, dict.count, 0, 0)
         return out.map { ($0.key.p, $0.key.key, $0.value) }
             .sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1.lexicographicallyPrecedes($1.1) }
+    }
+
+    // MARK: 简拼 / 混拼（二期；说明见 tools/pyengine.py「简拼 / 混拼」一节，两边逐字一致）
+
+    static let penAbbr = Int(2.0 * 2048)       // 每缩写一个字的罚分
+    static let abbrMax = 5                     // 一段首字母最多几个
+    static let abbrChars = 25                  // 单个首字母给几个最常用的字
+    static let abbrWords = 12                  // 多个首字母给简拼表里前几个词
+
+    /// 首字母 → 这个首字母下最常用的单字的词条序号（权重大 → 小，序号小 → 大）
+    private lazy var abbrTable: [UInt8: [Int]] = {
+        var by: [UInt8: [(Int, Int)]] = [:]
+        for i in 0..<dict.count where dict.isSingleHan(i) {
+            by[dict.keyPtr(i).0[0], default: []].append((-dict.rawWeight(i), i))
+        }
+        return by.mapValues { Array($0.sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }.prefix(Self.abbrChars).map { $0.1 }) }
+    }()
+
+    /// 从 b[i] 起（不越过 lim）的首字母段：[(吃掉几个字母, [词条序号…])]
+    private func abbrEdges(_ b: [UInt8], _ i: Int, _ lim: Int) -> [(Int, [Int])] {
+        var out: [(Int, [Int])] = []
+        var l = 1
+        while l <= min(Self.abbrMax, lim - i) {
+            let seg = Array(b[i..<(i + l)])
+            if !seg.allSatisfy({ $0 >= 97 && $0 <= 122 }) { break }
+            let es: [Int] = l == 1 ? (abbrTable[seg[0]] ?? []) : seg.withUnsafeBufferPointer { dict.initials($0.baseAddress!, l, limit: Self.abbrWords) }
+            if !es.isEmpty { out.append((l, es)) }
+            l += 1
+        }
+        return out
     }
 
     // MARK: 输入串处理
@@ -837,7 +877,8 @@ final class PinyinEngine {
         func wordOf(_ e: Int) -> String { e < nd ? dict.word(e) : pl[e - nd].word }
         func keyOf(_ e: Int) -> [UInt8] { e < nd ? dict.key(e) : pl[e - nd].key }
 
-        // 整句动态规划（带二元语法）：beams[j] = 盖住 b[0..<j] 的几条最优路径
+        // 整句动态规划（带二元语法）：beams[j] = 盖住 b[0..<j] 的几条最优路径。abbr = 简拼 / 混拼：词格里再加首字母边（普通词格盖不住整串时才重跑一遍）
+        func runDP(abbr: Bool) -> [[State]] {
         var beams = [[State]](repeating: [], count: n + 1)
         beams[0] = [State(cost: 0, last: ctxID, path: [])]
         func extend(_ i: Int, _ j: Int, _ es: [Int], _ pen: Int) {
@@ -885,8 +926,15 @@ final class PinyinEngine {
                     extend(i, i + p, Array(r.prefix(Self.perKey)), pen)
                 }
             }
+            if abbr {
+                for (l, es) in abbrEdges(b, i, lim) { extend(i, i + l, es, Self.penAbbr * l) }
+            }
         }
         beams[n] = prune(beams[n])
+        return beams
+        }
+        var beams = runDP(abbr: false)
+        if beams[n].isEmpty, n >= 2 { beams = runDP(abbr: true) }      // 普通词格盖不住整串（含纠错）：当简拼 / 混拼再试一遍
         /// 纠正后的拼音：路径上每个词条的键拼起来；和原样一样就是空串
         func fixed(_ path: [Int], _ j: Int) -> String {
             var k: [UInt8] = []
