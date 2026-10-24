@@ -147,28 +147,28 @@ final class KeyboardSmokeTests: XCTestCase {
         vc.view.layoutIfNeeded()
     }
 
-    /// 个人学习：分两次选出「医患」+「通」→ 记成自造词，再打 yihuantong 第一个就是「医患通」；存到文件、新键盘实例也认；清空后就没了
+    /// 个人学习：分两次选出「云朵」+「糕」→ 记成自造词，再打 yunduogao 第一个就是「云朵糕」；存到文件、新键盘实例也认；清空后就没了
     func testLearnsPhraseFromTwoPicks() {
         let vc = makeKeyboard()
-        for c in "yihuantong".map({ String($0) }) { tap(vc, c) }
-        XCTAssertNotEqual(candButtons(vc).first?.currentTitle, "医患通")
-        pickTitle(vc, "医患")
-        pickTitle(vc, "通")
+        for c in "yunduogao".map({ String($0) }) { tap(vc, c) }
+        XCTAssertNotEqual(candButtons(vc).first?.currentTitle, "云朵糕")
+        pickTitle(vc, "云朵")
+        pickTitle(vc, "糕")
         XCTAssertTrue(vc.buffer.isEmpty)
-        for c in "yihuantong".map({ String($0) }) { tap(vc, c) }
-        XCTAssertEqual(candButtons(vc).first?.currentTitle, "医患通", "选过一次的词组下次排第一")
+        for c in "yunduogao".map({ String($0) }) { tap(vc, c) }
+        XCTAssertEqual(candButtons(vc).first?.currentTitle, "云朵糕", "选过一次的词组下次排第一")
         vc.viewDidDisappear(false)                 // 收起键盘时存盘
         let vc2 = makeKeyboard()
-        for c in "yihuantong".map({ String($0) }) { tap(vc2, c) }
-        XCTAssertEqual(candButtons(vc2).first?.currentTitle, "医患通", "学到的存下来了，新起的键盘也认")
+        for c in "yunduogao".map({ String($0) }) { tap(vc2, c) }
+        XCTAssertEqual(candButtons(vc2).first?.currentTitle, "云朵糕", "学到的存下来了，新起的键盘也认")
         tapID(vc2, "gear")
         guard let clear = button(vc2, "learn-clear") else { return XCTFail("设置里没有「清空」") }
         XCTAssertFalse(clear.isHidden)
         clear.sendActions(for: .touchUpInside)
         button(vc2, "settings-done")?.sendActions(for: .touchUpInside)
         let vc3 = makeKeyboard()
-        for c in "yihuantong".map({ String($0) }) { tap(vc3, c) }
-        XCTAssertNotEqual(candButtons(vc3).first?.currentTitle, "医患通", "清空以后就不记得了")
+        for c in "yunduogao".map({ String($0) }) { tap(vc3, c) }
+        XCTAssertNotEqual(candButtons(vc3).first?.currentTitle, "云朵糕", "清空以后就不记得了")
     }
 
     /// 真机的样子：候选在后台算，按键当下拼音行先出来，候选随后就到；按空格时还没算好也落对（当场算）
