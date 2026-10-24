@@ -202,6 +202,13 @@ final class PinyinEngine {
         return uni + lm.backoff(last)      // 没见过的词对（含不在模型里的词）：一元代价 + 回退代价
     }
 
+    /// 音节 s 在词典里最常用字的词频（动态热区用，Keyboard/LetterPrior.swift）；词典里没有就是 1
+    func syllableWeight(_ s: String) -> Double {
+        let u = Array(s.utf8)
+        let r = u.withUnsafeBufferPointer { dict.exact($0.baseAddress!, u.count) }
+        return r.isEmpty ? 1 : exp(Double(dict.rawWeight(r.lowerBound)) / 2048)
+    }
+
     /// 上文最后一个词之后最可能接的词 / 标点
     func predict(after ctx: String, limit: Int = 12) -> [String] {
         guard let lm, !ctx.isEmpty else { return [] }

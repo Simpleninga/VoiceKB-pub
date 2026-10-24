@@ -1181,4 +1181,59 @@ final class KeyboardSmokeTests: XCTestCase {
         chips.first(where: { $0.tag == 4 })?.sendActions(for: .touchUpInside)
         XCTAssertEqual(vc.fuzzMask, 1)
     }
+
+    /// 动态热区的「下一个字母」：x 后面只可能是 i / u，zh 后面只可能是元音，ni 后面可能接 a / e / n（nian…）也可能开始新音节（h…）
+    func testLetterPriorFavoursValidNextLetter() {
+        let lp = LetterPrior(weight: { _ in 1 })
+        func a(_ c: Character) -> UInt8 { c.asciiValue! }
+        let x = lp.prior(buffer: "x")
+        XCTAssertNil(x[a("o")], "xo 不是音节")
+        XCTAssertNil(x[a("e")])
+        XCTAssertGreaterThan(x[a("i")] ?? 0, 0.1)
+        XCTAssertGreaterThan(x[a("u")] ?? 0, 0.1)
+        let zh = lp.prior(buffer: "zh")
+        XCTAssertNil(zh[a("j")])
+        XCTAssertNil(zh[a("h")])
+        XCTAssertGreaterThan(zh[a("a")] ?? 0, 0.1)
+        let ni = lp.prior(buffer: "ni")
+        XCTAssertGreaterThan(ni[a("h")] ?? 0, 0, "ni 后面可以开始新音节")
+        XCTAssertGreaterThan(ni[a("a")] ?? 0, 0, "nian / niang")
+        let none = lp.prior(buffer: "")
+        XCTAssertNil(none[a("i")], "音节不会以 i 开头")
+        XCTAssertNil(none[a("u")])
+        XCTAssertNil(none[a("v")])
+        XCTAssertGreaterThan(none[a("s")] ?? 0, 0.1)
+        XCTAssertGreaterThan(lp.prior(buffer: "xi'an")[a("g")] ?? 0, 0, "分词符后从头算：an 后面可以接 g（ang）")
+    }
+
+    /// 动态热区：打了 x 之后，i 和 o 键交界处偏向 o 一点的触摸，也算 i（xo 不是音节）
+    func testSeamFavoursLikelyNextLetter() throws {
+        let vc = makeKeyboard()
+        let i = try keyNamed(vc, "i"), o = try keyNamed(vc, "o")
+        let fi = i.convert(i.bounds, to: vc.view), fo = o.convert(o.bounds, to: vc.view)
+        let mid = (fi.maxX + fo.minX) / 2
+        let p = CGPoint(x: mid + 1, y: fi.midY)
+        XCTAssertTrue(vc.keyUnder(p) === o, "没打字母时，偏 o 一点就是 o")
+        tap(vc, "x")
+        XCTAssertTrue(vc.keyUnder(p) === i, "x 后面只可能是 i：偏 o 一点也算 i")
+        // 键的正中间不受影响
+        XCTAssertTrue(vc.keyUnder(CGPoint(x: fo.midX, y: fo.midY)) === o)
+    }
+
+    /// 表情联想：打 haha 候选里有 😂；选了「哈哈」后联想行里先给表情
+    func testEmojiCandidatesAndPredictions() {
+        let vc = makeKeyboard()
+        for c in ["h", "a", "h", "a"] { tap(vc, c) }
+        var titles = all(vc.view).compactMap { ($0 as? UIButton)?.currentTitle }
+        XCTAssertTrue(titles.contains("😂"), "haha 应该有 😂：\(titles.prefix(12))")
+        XCTAssertFalse(vc.buffer.isEmpty)
+        all(vc.view).compactMap { $0 as? UIButton }.first(where: { $0.currentTitle == "哈哈" && !$0.isHidden })?.sendActions(for: .touchUpInside)
+        XCTAssertEqual(vc.buffer, "", "选了哈哈")
+        titles = all(vc.view).compactMap { ($0 as? UIButton)?.currentTitle }
+        XCTAssertTrue(titles.contains("😂"), "选了哈哈以后联想里有 😂：\(titles.prefix(12))")
+        // 不相关的拼音没有表情
+        let vc2 = makeKeyboard()
+        for c in ["n", "i", "h", "a", "o"] { tap(vc2, c) }
+        XCTAssertFalse(all(vc2.view).compactMap { ($0 as? UIButton)?.currentTitle }.contains { $0.unicodeScalars.contains { $0.value >= 0x1F300 } }, "nihao 不该冒表情")
+    }
 }

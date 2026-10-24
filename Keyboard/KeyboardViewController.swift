@@ -1077,6 +1077,10 @@ final class KeyboardViewController: UIInputViewController {
         guard let path = Bundle(for: KeyboardViewController.self).path(forResource: "enwords", ofType: "txt") else { return nil }
         return EnglishWords(path: path)
     }()
+    private lazy var emoji: EmojiIndex? = {
+        guard let path = Bundle(for: KeyboardViewController.self).path(forResource: "emoji", ofType: "txt") else { return nil }
+        return EmojiIndex(path: path)
+    }()
     private lazy var engine: PinyinEngine? = {
         let bundle = Bundle(for: KeyboardViewController.self)
         guard let path = bundle.path(forResource: "pinyin", ofType: "dat"),
@@ -1317,6 +1321,7 @@ final class KeyboardViewController: UIInputViewController {
         root.onKeyDown = { [weak self] k in self?.keyFeedback(); self?.showPreview(k) }
         root.onKeyMoved = { [weak self] k, alt in self?.showPreview(k, text: alt) }      // 手指滑到别的键 / 上滑：气泡跟着走，不再响
         root.onKeyUp = { [weak self] in self?.hidePreview() }
+        root.letterBias = { [weak self] k in self?.hotBias(k) ?? 0 }      // 动态热区
         rootView = root
         root.axis = .vertical
         root.spacing = 4
@@ -1541,6 +1546,15 @@ final class KeyboardViewController: UIInputViewController {
         width(del, r3[0], 1.4)
 
         addBottomRow(first: "123", unit: r1[0]) { [weak self] in self?.switchLayer(.numbers) }
+    }
+
+    /// 动态热区（三期）：拼音输入时，两个字母键交界处让「更可能是下一个字母」的那个多占几点（最多 ±3pt，键中间不受影响）
+    private lazy var letterPrior: LetterPrior? = engine.map { e in LetterPrior(weight: { e.syllableWeight($0) }) }
+
+    private func hotBias(_ k: KeyButton) -> CGFloat {
+        guard chinese, layer == .letters, nineSyll == nil, shift == .off,
+              let c = letterKeys.first(where: { $0.0 === k })?.1.utf8.first, let lp = letterPrior else { return 0 }
+        return LetterPrior.bias(lp.prior(buffer: buffer)[c])
     }
 
     /// 字母键上滑能打的数字 / 符号（二期；手指要还在原来的键上、往上滑 16pt 以上，松手打出来，气泡里先显示）
@@ -2181,7 +2195,11 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func updatePredictions() {
-        if chinese, let w = contextWord() { predictions = engine?.predict(after: w, limit: 12) ?? [] } else { predictions = [] }
+        if chinese, let w = contextWord() {
+            predictions = Array((emoji?.forWord(w) ?? []).prefix(3)) + (engine?.predict(after: w, limit: 12) ?? [])      // 这个词有对应的表情就排最前
+        } else {
+            predictions = []
+        }
     }
 
     private func pickPrediction(_ i: Int) {
@@ -2200,7 +2218,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     /// 出候选（只读引擎和词表，后台线程上跑也行）
-    private static func makeList(_ e: PinyinEngine?, _ words: EnglishWords?, _ buf: String, chinese: Bool, nine: Bool, ctx: String?,
+    private static func makeList(_ e: PinyinEngine?, _ words: EnglishWords?, _ emoji: EmojiIndex?, _ buf: String, chinese: Bool, nine: Bool, ctx: String?,
                                  limit: Int, expanded: Bool) -> [PinyinCandidate] {
         if chinese {
             let r = nine
@@ -2212,6 +2230,11 @@ final class KeyboardViewController: UIInputViewController {
                 let cand = PinyinCandidate(text: en, consume: buf.count, kind: .raw)
                 let covered = out.first.map { $0.consume >= buf.count } ?? false
                 out.insert(cand, at: covered ? min(2, out.count) : 0)
+            }
+            // 表情联想（三期）：拼音正好是某个关键词（haha、aixin、zuqiu…）就在前三个候选后面补最多三个表情
+            if !nine, let em = emoji {
+                let es = em.forKey(buf.replacingOccurrences(of: "'", with: ""))
+                if !es.isEmpty { out.insert(contentsOf: es.prefix(3).map { PinyinCandidate(text: $0, consume: buf.count, kind: .raw) }, at: min(3, out.count)) }
             }
             return out
         }
@@ -2225,8 +2248,8 @@ final class KeyboardViewController: UIInputViewController {
 
     /// 当场算（排在后台正在算的后面），展开面板、按空格前候选还没跟上时用
     private func candidateList(limit: Int, expanded: Bool = false) -> [PinyinCandidate] {
-        let e = engine, w = words, buf = buffer, zh = chinese, nine = nineSyll != nil, ctx = contextWord()
-        return engineQueue.sync { Self.makeList(e, w, buf, chinese: zh, nine: nine, ctx: ctx, limit: limit, expanded: expanded) }
+        let e = engine, w = words, em = emoji, buf = buffer, zh = chinese, nine = nineSyll != nil, ctx = contextWord()
+        return engineQueue.sync { Self.makeList(e, w, em, buf, chinese: zh, nine: nine, ctx: ctx, limit: limit, expanded: expanded) }
     }
 
     // MARK: 引擎在后台算（一期④）：按键时气泡和拼音行先出来，候选几毫秒后到；连着快打只算最新的输入串
@@ -2263,14 +2286,14 @@ final class KeyboardViewController: UIInputViewController {
         latestGen &+= 1
         let gen = latestGen
         genLock.unlock()
-        let e = engine, w = words, buf = buffer, ctx = contextWord()
+        let e = engine, w = words, em = emoji, buf = buffer, ctx = contextWord()
         engineQueue.async { [weak self] in
             guard let self else { return }
             self.genLock.lock()
             let stale = gen != self.latestGen
             self.genLock.unlock()
             if stale { return }                  // 后面又按了键，这个不用算了
-            let r = Self.makeList(e, w, buf, chinese: true, nine: false, ctx: ctx, limit: 40, expanded: false)
+            let r = Self.makeList(e, w, em, buf, chinese: true, nine: false, ctx: ctx, limit: 40, expanded: false)
             DispatchQueue.main.async {
                 guard self.candKey == key else { return }
                 self.cands = r
@@ -2314,7 +2337,7 @@ final class KeyboardViewController: UIInputViewController {
         textDocumentProxy.insertText(c.text)
         addCtx(c.text)
         buffer = c.consume >= buffer.count ? "" : String(buffer.dropFirst(c.consume))
-        if !c.text.unicodeScalars.contains(where: { $0.isASCII }) { noteCommit(c, letters: letters) }      // 混输的英文词不进中文个人学习
+        if c.text.unicodeScalars.contains(where: { (0x4E00...0x9FFF).contains($0.value) }) { noteCommit(c, letters: letters) }      // 混输的英文词、表情不进中文个人学习
         updateCandidates()
     }
 
