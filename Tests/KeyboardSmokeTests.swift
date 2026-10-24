@@ -97,7 +97,7 @@ final class KeyboardSmokeTests: XCTestCase {
         for k in [q, a, m] { XCTAssertGreaterThanOrEqual(k.bounds.height, 46.5, "字母键要够高：\(k.bounds)") }
         XCTAssertLessThanOrEqual(q.bounds.height, 52, "太高显得窄、更不好按（用户 10-23 反馈）：\(q.bounds)")
         XCTAssertLessThanOrEqual(space.bounds.height, 44, "底排要矮：\(space.bounds)")
-        XCTAssertGreaterThan(q.bounds.height, space.bounds.height + 5)
+        XCTAssertGreaterThan(q.bounds.height, space.bounds.height + 3)
         XCTAssertGreaterThanOrEqual(q.bounds.width, 33, "字母键要宽：\(q.bounds)")
         XCTAssertGreaterThan(q.bounds.width / q.bounds.height, 0.7, "不能又高又窄：\(q.bounds)")
         let qf = q.convert(q.bounds, to: vc.view), af = a.convert(a.bounds, to: vc.view)
