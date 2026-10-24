@@ -966,10 +966,10 @@ final class KeyboardSmokeTests: XCTestCase {
         r.fingerDown(1, at: center(e, in: r), time: 0)
         XCTAssertEqual(vc.buffer, "", "手指还按着，不打")
         XCTAssertEqual(vc.previewText, "e", "按下去冒出气泡")
-        XCTAssertTrue(e.held)
+        XCTAssertTrue(e.touchHeld)
         r.fingerUp(1, at: center(e, in: r), time: 0.08, cancelled: false)
         XCTAssertEqual(vc.buffer, "e")
-        XCTAssertFalse(e.held)
+        XCTAssertFalse(e.touchHeld)
         XCTAssertEqual(r.stats.down, 1)
     }
 
@@ -1050,7 +1050,7 @@ final class KeyboardSmokeTests: XCTestCase {
         let e = try keyNamed(vc, "e"), t = try keyNamed(vc, "t")
         r.fingerDown(1, at: center(e, in: r), time: 0)
         r.fingerDown(2, at: center(t, in: r), time: 0.03)
-        XCTAssertTrue(e.held && t.held)
+        XCTAssertTrue(e.touchHeld && t.touchHeld)
         r.fingerUp(1, at: center(e, in: r), time: 0.1, cancelled: false)
         r.fingerUp(2, at: center(t, in: r), time: 0.12, cancelled: false)
         XCTAssertEqual(vc.buffer, "et")

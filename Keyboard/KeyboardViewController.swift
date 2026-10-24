@@ -24,7 +24,7 @@ final class KeyButton: UIButton {
     /// 按住不放时手指的位移（空格上左右滑移光标、删除键左滑清空）；返回 true = 这次触摸算滑动，松手不再当点按
     var onDrag: ((CGFloat, CGFloat) -> Bool)?
     /// 手指现在还按在它上面（接线后 UIControl 自己的 isTracking 不管用了）
-    var held = false
+    var touchHeld = false
     /// 这次触摸从按下到现在，手指横竖挪了多少（KeyboardRoot 每次更新）
     var dragDelta = CGPoint.zero
 
@@ -207,7 +207,7 @@ final class KeyboardRoot: UIStackView {
         guard let best = nearest(to: p), best.score > -30 else { stats.miss += 1; return }
         fingers[id] = Finger(key: best.key, start: p, t0: time)
         let k = best.key
-        k.held = true
+        k.touchHeld = true
         k.dragDelta = .zero
         k.isHighlighted = true
         if k.commitsOnRelease { onKeyDown?(k) } else { k.sendActions(for: .touchDown) }
@@ -228,9 +228,9 @@ final class KeyboardRoot: UIStackView {
                 onKeyMoved?(k, up ? k.swipeUp?.text : nil)
             }
             if !f.up, let n = near, n.key !== k, n.key.commitsOnRelease, n.score > -30 {
-                k.held = false
+                k.touchHeld = false
                 k.isHighlighted = false
-                n.key.held = true
+                n.key.touchHeld = true
                 n.key.isHighlighted = true
                 f.key = n.key
                 f.start = p
@@ -246,7 +246,7 @@ final class KeyboardRoot: UIStackView {
     func fingerUp(_ id: AnyHashable, at p: CGPoint, time: TimeInterval, cancelled: Bool) {
         guard let f = fingers.removeValue(forKey: id) else { return }
         let k = f.key
-        k.held = false
+        k.touchHeld = false
         k.isHighlighted = false
         k.dragDelta = CGPoint(x: p.x - f.start.x, y: p.y - f.start.y)
         if k.commitsOnRelease {
@@ -278,7 +278,7 @@ final class KeyboardRoot: UIStackView {
     /// 键盘收起 / 换了界面时手指还按着：当取消处理，别留着按下的状态（比如按住空格的录音）
     func cancelAll() {
         for (_, f) in fingers {
-            f.key.held = false
+            f.key.touchHeld = false
             f.key.isHighlighted = false
             if !f.key.commitsOnRelease { f.key.sendActions(for: .touchCancel) }
         }
@@ -2321,7 +2321,7 @@ final class KeyboardViewController: UIInputViewController {
             if needForeignCheck || leftOver { needForeignCheck = false; dropForeignVoice() }
         }
         // 按住说话时手指已经不在空格上了（松手事件没收到）：结束录音
-        if pttActive, !(spaceKey?.held ?? false) { pttEnd() }
+        if pttActive, !(spaceKey?.touchHeld ?? false) { pttEnd() }
         render()
         applySpaceWave()
         let a = s.app
