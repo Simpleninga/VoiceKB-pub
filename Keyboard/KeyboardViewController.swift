@@ -79,7 +79,7 @@ struct TouchStats {
 /// ② 每根手指单独跟踪（连打、两个拇指不互相顶掉）；
 /// ③ 字母 / 符号键松手才打字，按住时气泡跟着手指走，滑到哪个键就打哪个，上滑打数字（二期）；
 /// ④ 其它键照旧一按下就响应，并替它们发出原来的 touchDown / touchUpInside 事件（松手稍微滑出一点也算点到）；空格、删除键还能滑动（二期）。
-final class KeyboardRoot: UIStackView {
+final class KeyboardRoot: UIView {
     weak var keyArea: UIView?
     /// 手指按下一个字母 / 符号键（震动、声音、放大气泡）
     var onKeyDown: ((KeyButton) -> Void)?
@@ -115,17 +115,11 @@ final class KeyboardRoot: UIStackView {
         cached = nil
     }
 
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        bounds.insetBy(dx: -6, dy: -4).contains(point)
-    }
-
+    /// 这块透明的「触摸接线板」盖在按键区上面（四周多盖一圈：左右屏幕边缘、第一排上沿到候选栏之间那条缝、最下面一排的下沿），
+    /// 按键区里的触摸归它；🌐 键、九键左边可上下滑的音节列表这些自己收触摸的，让给下面的视图（返回 nil）
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let hit = super.hitTest(point, with: event)
-        guard let area = keyArea, isUserInteractionEnabled, !isHidden else { return hit }
-        let p = convert(point, to: area)
-        // 按键区往四周多算一圈：左右屏幕边缘、第一排上沿到候选栏之间那条缝、最下面一排的下沿
-        guard p.x >= -6, p.x <= area.bounds.width + 6, p.y >= -4, p.y <= area.bounds.height + 4 else { return hit }
-        if let h = hit, KeyboardRoot.ownsOwnTouches(h, upTo: area) { return h }
+        guard isUserInteractionEnabled, !isHidden, alpha > 0.01, bounds.contains(point) else { return nil }
+        if let area = keyArea, let under = area.hitTest(convert(point, to: area), with: event), KeyboardRoot.ownsOwnTouches(under, upTo: area) { return nil }
         return self
     }
 
@@ -1315,18 +1309,28 @@ final class KeyboardViewController: UIInputViewController {
         keyArea.axis = .vertical
         keyArea.spacing = Self.rowGap
         keyArea.distribution = .fill      // 每一排的高度单独定（sizeRows），不再平分
-        let root = KeyboardRoot(arrangedSubviews: [candBar, keyArea])
-        root.keyArea = keyArea
-        root.isMultipleTouchEnabled = true      // 每根手指单独跟踪：连打、两个拇指交替不互相顶掉
-        root.onKeyDown = { [weak self] k in self?.keyFeedback(); self?.showPreview(k) }
-        root.onKeyMoved = { [weak self] k, alt in self?.showPreview(k, text: alt) }      // 手指滑到别的键 / 上滑：气泡跟着走，不再响
-        root.onKeyUp = { [weak self] in self?.hidePreview() }
-        root.letterBias = { [weak self] k in self?.hotBias(k) ?? 0 }      // 动态热区
-        rootView = root
+        let root = UIStackView(arrangedSubviews: [candBar, keyArea])
         root.axis = .vertical
         root.spacing = 4
         root.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(root)
+        // 按键区上面盖一块透明的触摸接线板（普通 UIView，不靠 UIStackView 收触摸）
+        let pad = KeyboardRoot()
+        pad.keyArea = keyArea
+        pad.isMultipleTouchEnabled = true      // 每根手指单独跟踪：连打、两个拇指交替不互相顶掉
+        pad.onKeyDown = { [weak self] k in self?.keyFeedback(); self?.showPreview(k) }
+        pad.onKeyMoved = { [weak self] k, alt in self?.showPreview(k, text: alt) }      // 手指滑到别的键 / 上滑：气泡跟着走，不再响
+        pad.onKeyUp = { [weak self] in self?.hidePreview() }
+        pad.letterBias = { [weak self] k in self?.hotBias(k) ?? 0 }      // 动态热区
+        pad.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(pad)
+        rootView = pad
+        NSLayoutConstraint.activate([
+            pad.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            pad.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            pad.topAnchor.constraint(equalTo: keyArea.topAnchor, constant: -4),
+            pad.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
         let h = view.heightAnchor.constraint(equalToConstant: Self.keyboardHeight)
         h.priority = .defaultHigh
         NSLayoutConstraint.activate([
