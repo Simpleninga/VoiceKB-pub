@@ -58,6 +58,12 @@ for line in open(__file__.rsplit("/", 1)[0] + "/extra_words.txt", encoding="utf8
     if len(p) == 3 and not line.startswith("#") and p[2].isdigit():
         add(p[0], p[1].split(), int(p[2]))
 
+# 领域词补全（THUOCL：成语 / 医学 / 财经 / 法律 / 地名…，tools/build_domain_words.py 生成）：同样格式，权重已经压得比日常词低
+for line in open(__file__.rsplit("/", 1)[0] + "/extra_domain.txt", encoding="utf-8"):
+    p = line.rstrip("\n").split("\t")
+    if len(p) == 3 and not line.startswith("#") and p[2].isdigit():
+        add(p[0], p[1].split(), int(p[2]))
+
 # 口语词校正：雾凇的词频来自网页语料，个别口语词被同音的书面词压得太狠（待会 12450 对 带回 96010）。
 # tools/boost.txt 里每行一个词，把它提到同拼音的所有词前面（只抬到刚好比最高的那个多 1，别的不动）
 top = collections.defaultdict(int)
