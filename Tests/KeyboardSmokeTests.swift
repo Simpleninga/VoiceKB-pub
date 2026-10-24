@@ -94,14 +94,17 @@ final class KeyboardSmokeTests: XCTestCase {
               let m = keys(vc).first(where: { $0.currentTitle == "m" }), let space = keys(vc).first(where: { $0.accessibilityIdentifier == "space" }) else {
             return XCTFail("找不到 q / a / m / 空格")
         }
-        for k in [q, a, m] { XCTAssertGreaterThanOrEqual(k.bounds.height, 47, "字母键要够高：\(k.bounds)") }
+        for k in [q, a, m] { XCTAssertGreaterThanOrEqual(k.bounds.height, 46.5, "字母键要够高：\(k.bounds)") }
         XCTAssertLessThanOrEqual(q.bounds.height, 52, "太高显得窄、更不好按（用户 10-23 反馈）：\(q.bounds)")
         XCTAssertLessThanOrEqual(space.bounds.height, 44, "底排要矮：\(space.bounds)")
         XCTAssertGreaterThan(q.bounds.height, space.bounds.height + 5)
-        XCTAssertGreaterThanOrEqual(q.bounds.width, 35.5, "字母键要宽：\(q.bounds)")
+        XCTAssertGreaterThanOrEqual(q.bounds.width, 33, "字母键要宽：\(q.bounds)")
         XCTAssertGreaterThan(q.bounds.width / q.bounds.height, 0.7, "不能又高又窄：\(q.bounds)")
         let qf = q.convert(q.bounds, to: vc.view), af = a.convert(a.bounds, to: vc.view)
-        XCTAssertLessThanOrEqual(af.minY - qf.maxY, 8, "排与排之间的缝要小")
+        XCTAssertGreaterThanOrEqual(af.minY - qf.maxY, 8, "排与排之间的缝要宽些（用户 10-25 嫌太窄、容易误触）")
+        XCTAssertLessThanOrEqual(af.minY - qf.maxY, 11)
+        guard let w = keys(vc).first(where: { $0.currentTitle == "w" }) else { return XCTFail("找不到 w") }
+        XCTAssertGreaterThanOrEqual(w.convert(w.bounds, to: vc.view).minX - qf.maxX, 4.5, "同一排键之间的缝要宽些")
     }
 
     /// 拼音打错了也要联想到：zhidoa（o a 写反）→ 知道；nihoa → 你好；womne → 我们
@@ -229,13 +232,13 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertEqual(vc.buffer, "", "shift 之后的字母直接打，不该进拼音串")
     }
 
-    /// 候选栏右上的「分词 '」：xian → xian'
-    func testApostropheChip() {
+    /// 候选栏右上不再有「分词 '」（用户 10-25：它紧挨着展开箭头，容易误碰）；展开箭头还在
+    func testNoApostropheChipInTopBar() {
         let vc = makeKeyboard()
         for c in ["x", "i", "a", "n"] { tap(vc, c) }
-        guard let chip = all(vc.view).compactMap({ $0 as? UIButton }).first(where: { $0.accessibilityIdentifier == "apostrophe" }) else { return XCTFail("没有分词按钮") }
-        chip.sendActions(for: .touchUpInside)
-        XCTAssertEqual(vc.buffer, "xian'")
+        XCTAssertNil(button(vc, "apostrophe"), "顶栏不再有分词按钮")
+        XCTAssertNotNil(button(vc, "expand"))
+        XCTAssertEqual(vc.buffer, "xian")
     }
 
     /// 识别器停顿后从头重来：前面的话不能被覆盖
@@ -434,9 +437,9 @@ final class KeyboardSmokeTests: XCTestCase {
         guard let q = keys(vc).first(where: { $0.currentTitle == "q" }), let w = keys(vc).first(where: { $0.currentTitle == "w" }) else { return XCTFail("找不到 q / w") }
         let qf = q.convert(q.bounds, to: vc.view), wf = w.convert(w.bounds, to: vc.view)
         let gap = CGPoint(x: (qf.maxX + wf.minX) / 2, y: qf.midY)
-        let hit = vc.view.hitTest(gap, with: nil)
+        let hit = vc.keyUnder(gap)
         XCTAssertTrue(hit === q || hit === w, "缝里应该落到 q 或 w，实际 \(String(describing: hit))")
-        XCTAssertTrue(vc.view.hitTest(CGPoint(x: 1, y: qf.midY), with: nil) === q, "屏幕最左边应该算 q")
+        XCTAssertTrue(vc.keyUnder(CGPoint(x: 1, y: qf.midY)) === q, "屏幕最左边应该算 q")
     }
 
     /// 空格键里「空格」下面有一行小字提示，且装得下
@@ -907,5 +910,238 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertEqual(HostReturn.canonical("com.tencent.xin"), "com.tencent.xin", "没有团队号的原样")
         XCTAssertEqual(HostReturn.canonical("com.apple.mobilenotes"), "com.apple.mobilenotes")
         XCTAssertNil(HostReturn.url(for: "com.example.unknown.ABCDE12345"))
+    }
+
+    // MARK: 触摸接线（KeyboardRoot）：手指落在哪个键、滑动改键、上滑打数字、系统取消、两个手指
+
+    private func center(_ k: UIView, in r: UIView) -> CGPoint { k.convert(CGPoint(x: k.bounds.midX, y: k.bounds.midY), to: r) }
+
+    private func keyNamed(_ vc: KeyboardViewController, _ title: String) throws -> KeyButton {
+        try XCTUnwrap(keys(vc).first(where: { $0.currentTitle == title }), "找不到按键 \(title)")
+    }
+
+    private func keyNamed(_ vc: KeyboardViewController, id: String) throws -> KeyButton {
+        try XCTUnwrap(keys(vc).first(where: { $0.accessibilityIdentifier == id }), "找不到按键 \(id)")
+    }
+
+    /// 按键区里没有死角：每隔 2pt 取一个点（含键缝、左右屏幕边缘、第一排上沿、最下面一排下沿），都能落到某个键上，而且归键盘接线员收
+    func testNoDeadZoneInKeyArea() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        let area = try XCTUnwrap(r.keyArea)
+        let a = area.convert(area.bounds, to: r)
+        var bad: [String] = []
+        var y = a.minY - 4
+        while y <= a.maxY + 4 {
+            var x = a.minX - 6
+            while x <= a.maxX + 6 {
+                if r.key(at: CGPoint(x: x, y: y)) == nil { bad.append("(\(x),\(y))") }
+                x += 2
+            }
+            y += 2
+        }
+        XCTAssertTrue(bad.isEmpty, "这些点按不到任何键：\(bad.prefix(10))")
+        let q = try keyNamed(vc, "q"), w = try keyNamed(vc, "w")
+        let qf = q.convert(q.bounds, to: vc.view), wf = w.convert(w.bounds, to: vc.view)
+        let seam = CGPoint(x: (qf.maxX + wf.minX) / 2, y: qf.midY)
+        XCTAssertTrue(vc.view.hitTest(seam, with: nil) === r, "缝里的触摸由接线员收")
+        XCTAssertTrue(vc.view.hitTest(CGPoint(x: qf.midX, y: qf.minY - 3), with: nil) === r, "第一排上沿到候选栏之间那条缝也由接线员收")
+    }
+
+    /// 缝里归离得近的那个键
+    func testSeamGoesToTheCloserKey() throws {
+        let vc = makeKeyboard()
+        let q = try keyNamed(vc, "q"), w = try keyNamed(vc, "w")
+        let qf = q.convert(q.bounds, to: vc.view), wf = w.convert(w.bounds, to: vc.view)
+        let mid = (qf.maxX + wf.minX) / 2
+        XCTAssertTrue(vc.keyUnder(CGPoint(x: mid - 1, y: qf.midY)) === q)
+        XCTAssertTrue(vc.keyUnder(CGPoint(x: mid + 1, y: qf.midY)) === w)
+    }
+
+    /// 字母键松手才打字：按下去只冒气泡，抬手才进拼音串
+    func testLetterTypesOnRelease() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        let e = try keyNamed(vc, "e")
+        r.fingerDown(1, at: center(e, in: r), time: 0)
+        XCTAssertEqual(vc.buffer, "", "手指还按着，不打")
+        XCTAssertEqual(vc.previewText, "e", "按下去冒出气泡")
+        XCTAssertTrue(e.held)
+        r.fingerUp(1, at: center(e, in: r), time: 0.08, cancelled: false)
+        XCTAssertEqual(vc.buffer, "e")
+        XCTAssertFalse(e.held)
+        XCTAssertEqual(r.stats.down, 1)
+    }
+
+    /// 按偏了：手指滑到旁边的键再抬手，打的是手指下面那个键（气泡跟着走），跟系统键盘一样
+    func testSlideToNeighbourTypesTheKeyUnderFinger() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        let q = try keyNamed(vc, "q"), w = try keyNamed(vc, "w")
+        r.fingerDown(1, at: center(q, in: r), time: 0)
+        XCTAssertEqual(vc.previewText, "q")
+        r.fingerMoved(1, to: center(w, in: r))
+        XCTAssertEqual(vc.previewText, "w", "气泡跟着手指走")
+        XCTAssertEqual(vc.buffer, "")
+        r.fingerUp(1, at: center(w, in: r), time: 0.2, cancelled: false)
+        XCTAssertEqual(vc.buffer, "w", "打的是手指下面的 w，不是最开始按到的 q")
+        XCTAssertEqual(r.stats.slid, 1)
+    }
+
+    /// 字母键上滑打数字（二期）：q 上滑 → 1；气泡里先显示要打的数字；顶栏拼音串里不会有 q
+    func testSwipeUpTypesDigit() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        var typedSymbols: [String] = []
+        vc.symbolSink = { typedSymbols.append($0) }
+        let q = try keyNamed(vc, "q")
+        let c = center(q, in: r)
+        r.fingerDown(1, at: c, time: 0)
+        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 22))
+        XCTAssertEqual(vc.previewText, "1", "上滑时气泡显示要打的数字")
+        r.fingerUp(1, at: CGPoint(x: c.x, y: c.y - 22), time: 0.25, cancelled: false)
+        XCTAssertEqual(typedSymbols, ["1"])
+        XCTAssertEqual(vc.buffer, "", "没有把 q 打进拼音")
+        XCTAssertEqual(r.stats.swiped, 1)
+        // 上滑一小段又滑回来：还是打字母
+        r.fingerDown(2, at: c, time: 1)
+        r.fingerMoved(2, to: CGPoint(x: c.x, y: c.y - 22))
+        r.fingerMoved(2, to: c)
+        XCTAssertEqual(vc.previewText, "q", "滑回来气泡恢复成字母")
+        r.fingerUp(2, at: c, time: 1.2, cancelled: false)
+        XCTAssertEqual(vc.buffer, "q")
+    }
+
+    /// 第二排的键往上滑进了第一排的键：是「按偏了滑过去改」，打第一排的字母，不是第二排键的符号
+    func testSwipeUpIntoRowAboveIsSlideNotSymbol() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        var typedSymbols: [String] = []
+        vc.symbolSink = { typedSymbols.append($0) }
+        let s = try keyNamed(vc, "s"), w = try keyNamed(vc, "w")
+        let cs = center(s, in: r), up = CGPoint(x: cs.x, y: center(w, in: r).y)
+        r.fingerDown(1, at: cs, time: 0)
+        r.fingerMoved(1, to: up)
+        r.fingerUp(1, at: up, time: 0.3, cancelled: false)
+        XCTAssertTrue(typedSymbols.isEmpty)
+        XCTAssertTrue(vc.buffer == "w" || vc.buffer == "e", "滑进了上一排：\(vc.buffer)")
+    }
+
+    /// 系统把触摸抢走（边缘手势）：短促的一下点按照样打出来，不丢字；拖了很久的才算取消
+    func testSystemCancelOfQuickTapStillTypes() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        let a = try keyNamed(vc, "a"), b = try keyNamed(vc, "b")
+        r.fingerDown(1, at: center(a, in: r), time: 0)
+        r.fingerUp(1, at: center(a, in: r), time: 0.05, cancelled: true)
+        XCTAssertEqual(vc.buffer, "a", "短促的取消当点按")
+        XCTAssertEqual(r.stats.saved, 1)
+        r.fingerDown(2, at: center(b, in: r), time: 1)
+        r.fingerMoved(2, to: CGPoint(x: center(b, in: r).x + 60, y: center(b, in: r).y))
+        r.fingerUp(2, at: CGPoint(x: center(b, in: r).x + 60, y: center(b, in: r).y), time: 1.8, cancelled: true)
+        XCTAssertEqual(vc.buffer, "a", "拖了一阵又被系统取消，不打")
+        XCTAssertEqual(r.stats.cancelled, 1)
+    }
+
+    /// 连打 / 两个拇指交替：两根手指同时按着，各打各的，按抬起的先后顺序
+    func testTwoFingersAtOnce() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        let e = try keyNamed(vc, "e"), t = try keyNamed(vc, "t")
+        r.fingerDown(1, at: center(e, in: r), time: 0)
+        r.fingerDown(2, at: center(t, in: r), time: 0.03)
+        XCTAssertTrue(e.held && t.held)
+        r.fingerUp(1, at: center(e, in: r), time: 0.1, cancelled: false)
+        r.fingerUp(2, at: center(t, in: r), time: 0.12, cancelled: false)
+        XCTAssertEqual(vc.buffer, "et")
+    }
+
+    /// 空格只认「松手」：松手时手指稍微滑出键边（下面 25pt）照样打空格，不再丢
+    func testSpaceTapWithSlightSlideStillTypesSpace() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        modeKey(vc)?.sendActions(for: .touchDown)       // 英文：按空格 = 把拼的词落下
+        for c in ["t", "a", "k"] { tap(vc, c) }
+        XCTAssertEqual(vc.buffer, "tak")
+        let sp = try keyNamed(vc, id: "space")
+        let c = center(sp, in: r)
+        r.fingerDown(1, at: c, time: 0)
+        r.fingerUp(1, at: CGPoint(x: c.x + 5, y: sp.convert(sp.bounds, to: r).maxY + 25), time: 0.1, cancelled: false)
+        XCTAssertEqual(vc.buffer, "", "松手稍微滑出一点，空格照样生效")
+    }
+
+    /// 空格上横着滑 = 移光标（二期），不打空格、不触发按住说话
+    func testSpaceSlideMovesCursor() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        var moves: [Int] = []
+        vc.cursorProbe = { moves.append($0) }
+        let sp = try keyNamed(vc, id: "space")
+        let c = center(sp, in: r)
+        r.fingerDown(1, at: c, time: 0)
+        r.fingerMoved(1, to: CGPoint(x: c.x + 30, y: c.y))
+        r.fingerMoved(1, to: CGPoint(x: c.x + 45, y: c.y))
+        r.fingerMoved(1, to: CGPoint(x: c.x - 20, y: c.y))
+        r.fingerUp(1, at: CGPoint(x: c.x - 20, y: c.y), time: 0.5, cancelled: false)
+        XCTAssertEqual(moves.reduce(0, +), -1, "最后手指在起点左边 20pt = 往左一个字：\(moves)")
+        XCTAssertFalse(vc.pttActive)
+        XCTAssertEqual(r.stats.dragged, 1)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        XCTAssertFalse(vc.pttActive, "滑过以后按住说话的计时已经作废")
+    }
+
+    /// 删除键上往左滑 = 清空（二期）：正在拼的拼音清掉重来
+    func testDeleteSwipeLeftClearsPinyin() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        for c in ["n", "i", "h", "a", "o"] { tap(vc, c) }
+        XCTAssertEqual(vc.buffer, "nihao")
+        let del = try keyNamed(vc, id: "delete")
+        let c = center(del, in: r)
+        r.fingerDown(1, at: c, time: 0)
+        XCTAssertEqual(vc.buffer, "niha", "按下去先删一个")
+        r.fingerMoved(1, to: CGPoint(x: c.x - 30, y: c.y))
+        XCTAssertEqual(vc.buffer, "niha", "滑得不够远不清")
+        r.fingerMoved(1, to: CGPoint(x: c.x - 80, y: c.y))
+        XCTAssertEqual(vc.buffer, "", "左滑够远，清空")
+        r.fingerUp(1, at: CGPoint(x: c.x - 80, y: c.y), time: 0.4, cancelled: false)
+        XCTAssertEqual(vc.buffer, "")
+    }
+
+    /// 回车键按输入框的要求换字
+    func testReturnKeyShowsSendForSendFields() throws {
+        let vc = makeKeyboard()
+        let ret = try keyNamed(vc, id: "return")
+        XCTAssertNotNil(ret.image(for: .normal), "平常是换行图标")
+        vc.returnTypeProbe = { .send }
+        vc.refreshReturn()
+        XCTAssertEqual(ret.currentTitle, "发送")
+        XCTAssertNil(ret.image(for: .normal))
+        vc.returnTypeProbe = { .search }
+        vc.refreshReturn()
+        XCTAssertEqual(ret.currentTitle, "搜索")
+        vc.returnTypeProbe = { .default }
+        vc.refreshReturn()
+        XCTAssertNil(ret.currentTitle)
+        XCTAssertNotNil(ret.image(for: .normal))
+    }
+
+    /// 3。5 → 3.5：数字后面的中文句号遇到下一个数字改成小数点；别的情况不动
+    func testDecimalPointFix() {
+        XCTAssertTrue(KeyboardViewController.shouldFixDecimal(before: "价格3。", typing: "5"))
+        XCTAssertFalse(KeyboardViewController.shouldFixDecimal(before: "你好。", typing: "5"), "句号前不是数字")
+        XCTAssertFalse(KeyboardViewController.shouldFixDecimal(before: "3。", typing: "a"), "后面不是数字")
+        XCTAssertFalse(KeyboardViewController.shouldFixDecimal(before: nil, typing: "5"))
+        XCTAssertFalse(KeyboardViewController.shouldFixDecimal(before: "3", typing: "5"))
+    }
+
+    /// 中英混输：中文模式下打 wifi / ppt / ok，候选里有英文
+    func testMixedEnglishCandidates() {
+        for (typed, want) in [("wifi", "WiFi"), ("ppt", "PPT"), ("ok", "OK")] {
+            let vc = makeKeyboard()
+            for c in typed.map({ String($0) }) { tap(vc, c) }
+            let titles = all(vc.view).compactMap { ($0 as? UIButton)?.currentTitle }
+            XCTAssertTrue(titles.contains(want), "\(typed) 应该有英文候选「\(want)」，实际：\(titles.prefix(20))")
+        }
     }
 }

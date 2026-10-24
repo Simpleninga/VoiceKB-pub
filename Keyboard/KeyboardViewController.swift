@@ -7,13 +7,26 @@ enum Brand {
     static let lightGreen = UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0x9C / 255, green: 0xCF / 255, blue: 0x78 / 255, alpha: 1) : UIColor(red: 0xC9 / 255, green: 0xEB / 255, blue: 0xA8 / 255, alpha: 1) }
 }
 
-/// 按键：按下去立刻响应（touchDown），按住时变深色
+/// 按键：按住时变深色。字母区里的键不自己收触摸，由 KeyboardRoot 统一接线（见那边的说明）
 final class KeyButton: UIButton {
     var normalColor = UIColor.white { didSet { backgroundColor = isHighlighted ? pressedColor : normalColor } }
     var pressedColor = UIColor.lightGray
     override var isHighlighted: Bool { didSet { backgroundColor = isHighlighted ? pressedColor : normalColor } }
     /// 能按的范围比看得见的按键大这么多（顶栏的圆形按钮用：圆外面一圈也算按到）
     var hitOutset: CGFloat = 0
+    /// 由 KeyboardRoot 接线的键（字母区里的键）。🌐 键要系统给的真实触摸事件才能弹出输入法列表，不走这条
+    var routed = true
+    /// 字母 / 符号键：松手才打字，手指滑到哪个键就打哪个（跟系统键盘一样，按偏了可以滑过去改）；别的键（空格、删除、123…）一按下就响应
+    var commitsOnRelease = false
+    var onCommit: (() -> Void)?
+    /// 上滑一小段再松手要打的东西（字母键上滑出数字 / 符号）
+    var swipeUp: (text: String, action: () -> Void)?
+    /// 按住不放时手指的位移（空格上左右滑移光标、删除键左滑清空）；返回 true = 这次触摸算滑动，松手不再当点按
+    var onDrag: ((CGFloat, CGFloat) -> Bool)?
+    /// 手指现在还按在它上面（接线后 UIControl 自己的 isTracking 不管用了）
+    var held = false
+    /// 这次触摸从按下到现在，手指横竖挪了多少（KeyboardRoot 每次更新）
+    var dragDelta = CGPoint.zero
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         bounds.insetBy(dx: -hitOutset, dy: -hitOutset).contains(point)
@@ -26,10 +39,81 @@ final class KeyButton: UIButton {
     }
 }
 
-/// 整个键盘的根容器：手指落在按键之间的缝里、或者屏幕左右边缘的空隙里，也算按到最近的那个键
-/// （系统键盘就是这样，缝里按了不会没反应）
+/// 比看得见的大一圈的按钮：手指偏一点、稍微滑一下也算按到（展开箭头、撤销、✕ 这些小按钮用）
+final class PadButton: UIButton {
+    var pad = UIEdgeInsets.zero      // 往外多算的范围（正数 = 往外）
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        bounds.inset(by: UIEdgeInsets(top: -pad.top, left: -pad.left, bottom: -pad.bottom, right: -pad.right)).contains(point)
+    }
+}
+
+/// 候选 / 音节这类「在滑动区里、松手才算点」的按钮：松手时手指稍微滑出了按钮边（但没在滑动列表）也算点到。
+/// 以前只认 touchUpInside，手指一滑出边（手指带一点滑动是常态）这一下就丢了，用户感觉「滑的时候经常没反应」
+func tapIsNear(_ b: UIView, _ event: UIEvent?, scroll: UIScrollView?) -> Bool {
+    if let s = scroll, s.isDragging || s.isDecelerating { return false }
+    guard let p = event?.allTouches?.first?.location(in: b) else { return false }
+    return b.bounds.insetBy(dx: -14, dy: -20).contains(p)
+}
+
+/// 一次键盘使用中手指的各种情况的计数，用来在服务器日志里看「按了没反应」到底是哪一种（键盘收起时补报）
+struct TouchStats {
+    var down = 0         // 手指按下的次数
+    var miss = 0         // 按下去附近找不到键
+    var slid = 0         // 按下后滑到了别的键才松手（按偏了滑过去改）
+    var swiped = 0       // 上滑打了数字 / 符号
+    var dragged = 0      // 在空格 / 删除上滑动
+    var cancelled = 0    // 被系统取消（而且不是短促的点按）
+    var saved = 0        // 系统取消了，但是一下短促的点按，照样打了
+    var far = 0          // 手指拖出键盘很远松手，取消
+
+    var summary: String {
+        "按下\(down) 没按到键\(miss) 滑过去改\(slid) 上滑\(swiped) 空格删除滑动\(dragged) 系统取消\(cancelled) 取消后补打\(saved) 拖远取消\(far)"
+    }
+}
+
+/// 整个键盘的根容器，也是字母区所有按键的「触摸接线员」。
+/// 以前每个键自己收触摸（UIControl）：松手才算数的键（空格、候选）手指一滑出键边就整个丢掉；手指落在缝里、屏幕边缘、第一排上沿的空档要靠补丁；
+/// 字母一按下就打、按偏了没法改。现在统一在这里收：
+/// ① 手指落在哪个键按位置现算——没有死角，缝里 / 屏幕边缘 / 第一排上沿都归最近的键；
+/// ② 每根手指单独跟踪（连打、两个拇指不互相顶掉）；
+/// ③ 字母 / 符号键松手才打字，按住时气泡跟着手指走，滑到哪个键就打哪个，上滑打数字（二期）；
+/// ④ 其它键照旧一按下就响应，并替它们发出原来的 touchDown / touchUpInside 事件（松手稍微滑出一点也算点到）；空格、删除键还能滑动（二期）。
 final class KeyboardRoot: UIStackView {
     weak var keyArea: UIView?
+    /// 手指按下一个字母 / 符号键（震动、声音、放大气泡）
+    var onKeyDown: ((KeyButton) -> Void)?
+    /// 手指滑到了另一个字母键 / 上滑状态变了（气泡跟着走；text = 上滑状态下松手要打的字）
+    var onKeyMoved: ((KeyButton, String?) -> Void)?
+    /// 手指抬起 / 取消（收起气泡）
+    var onKeyUp: (() -> Void)?
+    /// 动态热区：某个键现在「更可能是下一个要按的」，在两个键的交界处让它多占几个点（单位 pt，可正可负）
+    var letterBias: ((KeyButton) -> CGFloat)?
+    private(set) var stats = TouchStats()
+
+    /// 上滑超过这么多、而且手指还在原来那个键上，才算「上滑打数字」
+    static let swipeUpDistance: CGFloat = 16
+
+    private struct Finger {
+        var key: KeyButton
+        var start: CGPoint
+        let t0: TimeInterval
+        var up = false
+        var dragged = false
+        var far = false
+    }
+    private var fingers: [AnyHashable: Finger] = [:]
+    private var cached: [KeyButton]?
+
+    func resetStats() { stats = TouchStats() }
+
+    /// 重排以后按键换了一批
+    func invalidateKeys() { cached = nil }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        cached = nil
+    }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         bounds.insetBy(dx: -6, dy: -4).contains(point)
@@ -37,17 +121,23 @@ final class KeyboardRoot: UIStackView {
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let hit = super.hitTest(point, with: event)
-        if hit is UIControl { return hit }
-        guard let area = keyArea else { return hit }
+        guard let area = keyArea, isUserInteractionEnabled, !isHidden else { return hit }
         let p = convert(point, to: area)
-        guard p.y >= 0, p.y <= area.bounds.height + 4, p.x >= -6, p.x <= area.bounds.width + 6 else { return hit }
-        var best: (KeyButton, CGFloat)?
-        for k in KeyboardRoot.buttons(in: area) {
-            let f = k.convert(k.bounds, to: area)
-            let d = hypot(max(f.minX - p.x, 0, p.x - f.maxX), max(f.minY - p.y, 0, p.y - f.maxY))
-            if d <= 20, d < (best?.1 ?? .infinity), KeyboardRoot.visible(k, upTo: area) { best = (k, d) }
+        // 按键区往四周多算一圈：左右屏幕边缘、第一排上沿到候选栏之间那条缝、最下面一排的下沿
+        guard p.x >= -6, p.x <= area.bounds.width + 6, p.y >= -4, p.y <= area.bounds.height + 4 else { return hit }
+        if let h = hit, KeyboardRoot.ownsOwnTouches(h, upTo: area) { return h }
+        return self
+    }
+
+    /// 🌐 键、九键左边可上下滑的音节列表这些自己收触摸，不归接线员管
+    private static func ownsOwnTouches(_ v: UIView, upTo area: UIView) -> Bool {
+        var x: UIView? = v
+        while let c = x, c !== area {
+            if let k = c as? KeyButton, !k.routed { return true }
+            if c is UIScrollView { return true }
+            x = c.superview
         }
-        return best?.0 ?? hit
+        return false
     }
 
     /// k 到 area 之间有没有被藏起来的（九键左边的标点 / 音节列表会轮流藏）
@@ -63,8 +153,137 @@ final class KeyboardRoot: UIStackView {
     private static func buttons(in v: UIView) -> [KeyButton] {
         v.subviews.flatMap { sub -> [KeyButton] in
             if let k = sub as? KeyButton { return [k] }
+            if sub is UIScrollView { return [] }      // 滑动区里的按钮自己收触摸
             return buttons(in: sub)
         }
+    }
+
+    /// 现在能按的、归接线员管的所有键
+    private func routedKeys() -> [KeyButton] {
+        guard let area = keyArea else { return [] }
+        if cached == nil { cached = KeyboardRoot.buttons(in: area).filter { $0.routed } }
+        return (cached ?? []).filter { !$0.bounds.isEmpty && KeyboardRoot.visible($0, upTo: area) }
+    }
+
+    /// 手指在 p 的位置，该算哪个键。得分 = 手指在键里面时离最近一条边有多深（正），在键外面时离键有多远（负）；
+    /// 只有在两个键交界处（里外 3pt 以内）才让「下一个字母更可能是谁」说话，刚按着的那个键再黏一点（滑动时不来回跳）
+    func nearest(to p: CGPoint, sticky: KeyButton? = nil) -> (key: KeyButton, score: CGFloat)? {
+        var best: (key: KeyButton, score: CGFloat)?
+        for k in routedKeys() {
+            let f = k.convert(k.bounds, to: self)
+            let ox = max(f.minX - p.x, 0, p.x - f.maxX), oy = max(f.minY - p.y, 0, p.y - f.maxY)
+            var s: CGFloat = (ox > 0 || oy > 0) ? -hypot(ox, oy) : min(p.x - f.minX, f.maxX - p.x, p.y - f.minY, f.maxY - p.y)
+            if s < 3, let bias = letterBias { s += bias(k) }
+            if k === sticky { s += 3 }
+            s -= 0.001 * hypot(f.midX - p.x, f.midY - p.y)
+            if best == nil || s > best!.score { best = (k, s) }
+        }
+        return best
+    }
+
+    /// 测试用：根视图坐标里 p 这个点会按到哪个键
+    func key(at p: CGPoint) -> KeyButton? { nearest(to: p).flatMap { $0.score > -30 ? $0.key : nil } }
+
+    // MARK: 触摸（UIKit 的触摸回调只是把手指的位置转给下面几个入口；测试直接调这几个入口，不用造真的 UITouch）
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for t in touches { fingerDown(ObjectIdentifier(t), at: t.location(in: self), time: t.timestamp) }
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for t in touches { fingerMoved(ObjectIdentifier(t), to: t.location(in: self)) }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for t in touches { fingerUp(ObjectIdentifier(t), at: t.location(in: self), time: t.timestamp, cancelled: false) }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for t in touches { fingerUp(ObjectIdentifier(t), at: t.location(in: self), time: t.timestamp, cancelled: true) }
+    }
+
+    func fingerDown(_ id: AnyHashable, at p: CGPoint, time: TimeInterval) {
+        stats.down += 1
+        guard let best = nearest(to: p), best.score > -30 else { stats.miss += 1; return }
+        fingers[id] = Finger(key: best.key, start: p, t0: time)
+        let k = best.key
+        k.held = true
+        k.dragDelta = .zero
+        k.isHighlighted = true
+        if k.commitsOnRelease { onKeyDown?(k) } else { k.sendActions(for: .touchDown) }
+    }
+
+    func fingerMoved(_ id: AnyHashable, to p: CGPoint) {
+        guard var f = fingers[id] else { return }
+        let dx = p.x - f.start.x, dy = p.y - f.start.y
+        let k = f.key
+        k.dragDelta = CGPoint(x: dx, y: dy)
+        if k.commitsOnRelease {
+            let near = nearest(to: p, sticky: k)
+            f.far = (near?.score ?? -100) < -70
+            // 上滑：手指还在这个键上、往上滑够远 → 松手打它的数字 / 符号；滑进了上一排的键就是「滑过去改」
+            let up = k.swipeUp != nil && dy < -Self.swipeUpDistance && -dy > abs(dx) && near?.key === k
+            if up != f.up {
+                f.up = up
+                onKeyMoved?(k, up ? k.swipeUp?.text : nil)
+            }
+            if !f.up, let n = near, n.key !== k, n.key.commitsOnRelease, n.score > -30 {
+                k.held = false
+                k.isHighlighted = false
+                n.key.held = true
+                n.key.isHighlighted = true
+                f.key = n.key
+                f.start = p
+                stats.slid += 1
+                onKeyMoved?(n.key, nil)
+            }
+        } else if let drag = k.onDrag, drag(dx, dy) {
+            f.dragged = true
+        }
+        fingers[id] = f
+    }
+
+    func fingerUp(_ id: AnyHashable, at p: CGPoint, time: TimeInterval, cancelled: Bool) {
+        guard let f = fingers.removeValue(forKey: id) else { return }
+        let k = f.key
+        k.held = false
+        k.isHighlighted = false
+        k.dragDelta = CGPoint(x: p.x - f.start.x, y: p.y - f.start.y)
+        if k.commitsOnRelease {
+            onKeyUp?()
+            // 系统抢走了触摸（边缘手势之类）：短促的一下点按照样打出去，别丢字；拖了一阵的才真的取消
+            let tap = time - f.t0 < 0.3 && hypot(k.dragDelta.x, k.dragDelta.y) < 14
+            if cancelled, !tap { stats.cancelled += 1; return }
+            if f.far { stats.far += 1; return }
+            if cancelled { stats.saved += 1 }
+            if f.up, let s = k.swipeUp {
+                stats.swiped += 1
+                s.action()
+            } else {
+                k.onCommit?()
+            }
+        } else if cancelled {
+            stats.cancelled += 1
+            k.sendActions(for: .touchCancel)
+        } else if f.dragged {
+            stats.dragged += 1
+            k.sendActions(for: .touchCancel)      // 滑动过的不当点按
+        } else {
+            // 松手时手指离开键 40pt 以内都算点到（空格这类只认「松手」的键，手指一滑出边不再丢）
+            let fr = k.convert(k.bounds, to: self).insetBy(dx: -40, dy: -40)
+            k.sendActions(for: fr.contains(p) ? .touchUpInside : .touchUpOutside)
+        }
+    }
+
+    /// 键盘收起 / 换了界面时手指还按着：当取消处理，别留着按下的状态（比如按住空格的录音）
+    func cancelAll() {
+        for (_, f) in fingers {
+            f.key.held = false
+            f.key.isHighlighted = false
+            if !f.key.commitsOnRelease { f.key.sendActions(for: .touchCancel) }
+        }
+        fingers = [:]
+        onKeyUp?()
     }
 }
 
@@ -174,7 +393,7 @@ final class WaveView: UIView {
     }
 }
 
-/// 键盘上方的一条（高 58）：打字时 = 上一行拼音（右边有「分词'」和展开箭头）+ 下一行候选字（可横滑，第一个绿色）；
+/// 键盘上方的一条（高 58）：打字时 = 上一行拼音（右边有展开箭头）+ 下一行候选字（可横滑，第一个绿色）；
 /// 不打字时 = 左边小圆形麦克风按钮、中间语音状态文字 / 声波、右边一个向下的小箭头（点一下收起键盘；刚听写完在它左边多一个「撤销」）。
 /// 打字时麦克风和收起箭头让位，候选能用满整条。
 final class CandidateBar: UIView {
@@ -184,11 +403,10 @@ final class CandidateBar: UIView {
     private let statusLabel = UILabel()
     private let wave = WaveView()
     private let compLabel = UILabel()
-    private let apos = UIButton(type: .custom)
-    private let expand = UIButton(type: .custom)
+    private let expand = PadButton(type: .custom)
     private let scroll = UIScrollView()
     private let stack = UIStackView()
-    private let undo = UIButton(type: .custom)
+    private let undo = PadButton(type: .custom)
     private let hide = KeyButton(type: .custom)         // 不打字时最右边的白色圆形按钮（向下箭头）：收起键盘
     private let gear = KeyButton(type: .custom)         // 它左边的白色圆形按钮（齿轮）：键盘设置（按键震动、26键 / 九键）
     private var compLeading: NSLayoutConstraint!        // 拼音行的左边：平时 10，联想预测时让出左边的麦克风
@@ -196,13 +414,12 @@ final class CandidateBar: UIView {
     private var pool: [UIButton] = []          // 候选按钮：建一次反复用，打每个字母都重建几十个按钮会卡
     var onPick: ((Int) -> Void)?
     var onUndo: (() -> Void)?
-    var onApostrophe: (() -> Void)?
     var onMic: (() -> Void)?
     var onExpand: (() -> Void)?
     var onHide: (() -> Void)?
     var onGear: (() -> Void)?
     var onXmark: (() -> Void)?
-    private let xmark = UIButton(type: .custom)   // 联想预测行右边的 ✕：关掉这行联想，顶栏回最开始
+    private let xmark = PadButton(type: .custom)   // 联想预测行右边的 ✕：关掉这行联想，顶栏回最开始
 
 
     override init(frame: CGRect) {
@@ -214,15 +431,11 @@ final class CandidateBar: UIView {
         compLabel.textColor = .label
         compLabel.lineBreakMode = .byTruncatingHead
         compLabel.accessibilityIdentifier = "comp"
-        apos.setTitle("分词 '", for: .normal)
-        apos.titleLabel?.font = .systemFont(ofSize: 13)
-        apos.setTitleColor(.label, for: .normal)
-        apos.setTitleColor(.secondaryLabel, for: .highlighted)
-        apos.accessibilityIdentifier = "apostrophe"
-        apos.addTarget(self, action: #selector(aposTapped), for: .touchUpInside)
         expand.tintColor = .label
         expand.accessibilityIdentifier = "expand"
+        expand.pad = UIEdgeInsets(top: 4, left: 14, bottom: 8, right: 8)      // 展开箭头原来只有 36×26，手指一偏就按不到
         expand.addTarget(self, action: #selector(expandTapped), for: .touchUpInside)
+        scroll.delaysContentTouches = false          // 候选字按下去立刻有反应，不等 0.15 秒
         setExpanded(false)
         stack.axis = .horizontal
         stack.spacing = 2
@@ -232,6 +445,7 @@ final class CandidateBar: UIView {
         undo.titleLabel?.font = .systemFont(ofSize: 14)
         undo.setTitleColor(.label, for: .normal)
         undo.setTitleColor(.secondaryLabel, for: .highlighted)
+        undo.pad = UIEdgeInsets(top: 10, left: 8, bottom: 10, right: 8)
         undo.addTarget(self, action: #selector(undoTapped), for: .touchUpInside)
         undo.isHidden = true
         mic.layer.cornerRadius = Self.circle / 2
@@ -250,10 +464,11 @@ final class CandidateBar: UIView {
         xmark.layer.cornerRadius = 13
         xmark.accessibilityIdentifier = "xmark"
         xmark.accessibilityLabel = "关掉联想"
+        xmark.pad = UIEdgeInsets(top: 10, left: 12, bottom: 10, right: 10)
         xmark.addTarget(self, action: #selector(xmarkTapped), for: .touchUpInside)
         xmark.isHidden = true
         wave.isHidden = true
-        for v in [statusLabel, wave, compLabel, apos, expand, scroll, undo, mic, hide, gear, xmark] {
+        for v in [statusLabel, wave, compLabel, expand, scroll, undo, mic, hide, gear, xmark] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -286,19 +501,15 @@ final class CandidateBar: UIView {
             wave.trailingAnchor.constraint(equalTo: gear.leadingAnchor, constant: -8),
             wave.centerYAnchor.constraint(equalTo: centerYAnchor),
             wave.heightAnchor.constraint(equalToConstant: 36),
-            // 上一行：拼音 + 分词 + 展开箭头
+            // 上一行：拼音 + 展开箭头
             compLeading,
             compLabel.topAnchor.constraint(equalTo: topAnchor, constant: 3),
             compLabel.heightAnchor.constraint(equalToConstant: 22),
-            compLabel.trailingAnchor.constraint(lessThanOrEqualTo: apos.leadingAnchor, constant: -6),
+            compLabel.trailingAnchor.constraint(lessThanOrEqualTo: expand.leadingAnchor, constant: -6),
             expand.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             expand.centerYAnchor.constraint(equalTo: compLabel.centerYAnchor),
             expand.widthAnchor.constraint(equalToConstant: 36),
             expand.heightAnchor.constraint(equalToConstant: 26),
-            apos.trailingAnchor.constraint(equalTo: expand.leadingAnchor, constant: -4),
-            apos.centerYAnchor.constraint(equalTo: compLabel.centerYAnchor),
-            apos.widthAnchor.constraint(equalToConstant: 56),
-            apos.heightAnchor.constraint(equalToConstant: 26),
             // 下一行：候选字（麦克风让位，用满整条）
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -337,7 +548,6 @@ final class CandidateBar: UIView {
         hide.isHidden = !on
         gear.isHidden = !on
         compLabel.isHidden = on
-        apos.isHidden = on
         expand.isHidden = on
         scroll.isHidden = on
         xmark.isHidden = true      // ✕ 只在联想预测那一行出现
@@ -378,11 +588,10 @@ final class CandidateBar: UIView {
     private var shownItems: [String] = []
     private var shownFirst = true
 
-    func showCandidates(comp: String, items: [String], apostrophe: Bool = true) {
+    func showCandidates(comp: String, items: [String]) {
         statusLabel.isHidden = true
         wave.isHidden = true
         idleLayout(false)
-        apos.isHidden = !apostrophe        // 分词只有拼音用得上
         undo.isHidden = true
         compLeading.constant = 10
         setInsets(left: 0, right: 0)
@@ -400,7 +609,6 @@ final class CandidateBar: UIView {
         xmark.isHidden = false      // 联想行右边的 ✕：关掉联想，回到最开始的顶栏
         compLabel.isHidden = false
         scroll.isHidden = false
-        apos.isHidden = true
         expand.isHidden = true
         compLeading.constant = 58
         setInsets(left: 56, right: 52)      // 右边留 ✕ 的位置
@@ -427,6 +635,7 @@ final class CandidateBar: UIView {
             b.contentEdgeInsets = UIEdgeInsets(top: 0, left: 11, bottom: 0, right: 11)
             b.tag = pool.count
             b.addTarget(self, action: #selector(pick(_:)), for: .touchUpInside)
+            b.addTarget(self, action: #selector(pickNear(_:event:)), for: .touchUpOutside)      // 手指稍微滑出按钮边松手也算选中
             stack.addArrangedSubview(b)
             pool.append(b)
         }
@@ -441,8 +650,8 @@ final class CandidateBar: UIView {
     func showUndo(_ on: Bool) { undo.isHidden = !on }
 
     @objc private func pick(_ b: UIButton) { onPick?(b.tag) }
+    @objc private func pickNear(_ b: UIButton, event: UIEvent?) { if tapIsNear(b, event, scroll: scroll) { onPick?(b.tag) } }
     @objc private func undoTapped() { onUndo?() }
-    @objc private func aposTapped() { onApostrophe?() }
     @objc private func micTapped() { onMic?() }
     @objc private func expandTapped() { onExpand?() }
     @objc private func hideTapped() { onHide?() }
@@ -477,6 +686,7 @@ final class SyllableColumn: UIScrollView {
             let b = maker()
             b.tag = pool.count
             b.addTarget(self, action: #selector(tapped(_:)), for: .touchUpInside)      // 要能上下滑，所以松手才算点
+            b.addTarget(self, action: #selector(tappedNear(_:event:)), for: .touchUpOutside)
             addSubview(b)
             pool.append(b)
         }
@@ -495,6 +705,7 @@ final class SyllableColumn: UIScrollView {
     }
 
     @objc private func tapped(_ b: UIButton) { onPick?(b.tag) }
+    @objc private func tappedNear(_ b: UIButton, event: UIEvent?) { if tapIsNear(b, event, scroll: self) { onPick?(b.tag) } }
 }
 
 /// 键盘设置面板（顶栏的齿轮打开，盖住按键区）：按键震动开关、拼音键盘 26键 / 九键
@@ -619,6 +830,7 @@ final class CandidatePanel: UIScrollView {
             b.layer.cornerRadius = 6
             b.tag = pool.count
             b.addTarget(self, action: #selector(tapped(_:)), for: .touchUpInside)
+            b.addTarget(self, action: #selector(tappedNear(_:event:)), for: .touchUpOutside)
             addSubview(b)
             pool.append(b)
         }
@@ -645,6 +857,7 @@ final class CandidatePanel: UIScrollView {
     }
 
     @objc private func tapped(_ b: UIButton) { onPick?(b.tag) }
+    @objc private func tappedNear(_ b: UIButton, event: UIEvent?) { if tapIsNear(b, event, scroll: self) { onPick?(b.tag) } }
 }
 
 /// 语音键盘：语音听写（主 App 录音，这里收字）+ 中文拼音 / 英文 / 数字符号三套打字键盘。
@@ -739,6 +952,9 @@ final class KeyboardViewController: UIInputViewController {
     private var pollEvery: TimeInterval = 0.5     // 说话时 0.1 秒问一次（画声波、让字跟得上），平时 0.5 秒
     private var visible = false
     private var deleteTimer: Timer?
+    private var clearing = false           // 这次在删除键上左滑清空了（松手不再当点按）
+    private var pressDeleted: String?      // 这次按下去就删掉的那个字（左滑清空时算进「撤销」）
+    private var clearedText = ""           // 删除键左滑清空时清掉的字，顶栏「撤销」放回去用
     private(set) var live = ""     // 这次听写里「当前这一段」已经打进输入框的文字：说话时跟着识别结果变，润色好了被替换
     private var liveSID = -1       // live 是第几次录音的
     private var liveFinal = false  // 已经收到过结果（再替换前要先确认光标还在这段文字后面）
@@ -759,6 +975,9 @@ final class KeyboardViewController: UIInputViewController {
     private var lastResend = Date.distantPast
     private var snap = Link.Snap()
     private let preview = KeyPreview()
+    private weak var rootView: KeyboardRoot?
+    private weak var returnKey: KeyButton?
+    private var shownReturn: String??
     private let panel = CandidatePanel()
     private var panelOpen = false
     private weak var spaceKey: KeyButton?
@@ -768,6 +987,8 @@ final class KeyboardViewController: UIInputViewController {
     private var previewHide: DispatchWorkItem?
     private var spaceTimer: Timer?
     private var spaceLong = false  // 空格已经按够久了，算「按住说话」
+    private var spaceSwiping = false     // 这次在空格上横着滑了：移光标，松手不打空格
+    private var spaceSteps = 0           // 这次滑动已经挪了几个字
     var pttActive = false  // 这次按住是我发的开始，松手要发结束（测试要改它，所以不是 private）
 
     // MARK: 点了没反应的防线
@@ -790,6 +1011,12 @@ final class KeyboardViewController: UIInputViewController {
     private var fullAccess: Bool { fullAccessProbe?() ?? hasFullAccess }
     /// 状态栏现在写的字（测试用）
     var shownStatus: String { statusText }
+    /// 测试用：接线员（模拟手指按下 / 滑动 / 抬起）和「键盘视图坐标里这个点会按到哪个键」
+    var router: KeyboardRoot? { rootView }
+    var symbolSink: ((String) -> Void)?          // 测试用：打了哪个符号 / 数字
+    var cursorProbe: ((Int) -> Void)?            // 测试用：光标挪了几个字
+    var returnTypeProbe: (() -> UIReturnKeyType?)?      // 测试用：输入框要求的回车键类型
+    func keyUnder(_ p: CGPoint) -> KeyButton? { rootView.flatMap { r in r.key(at: r.convert(p, from: view)) } }
 
     // MARK: 打字
     private enum Layer { case letters, numbers }
@@ -916,6 +1143,7 @@ final class KeyboardViewController: UIInputViewController {
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
         HostApp.harvest()
+        refreshReturn()
         if visible { needForeignCheck = true }
         if dropForeignVoice() { render() }        // 键盘没收起、直接换到了另一个输入框
         // 输入框被宿主清空了（App 自己的发送按钮发出去了、换了新对话）：顶栏回到最开始的样子
@@ -939,7 +1167,6 @@ final class KeyboardViewController: UIInputViewController {
         candBar.onExpand = { [weak self] in self?.togglePanel() }
         panel.onPick = { [weak self] i in self?.pickFromPanel(i) }
         candBar.onUndo = { [weak self] in self?.undoVoice() }
-        candBar.onApostrophe = { [weak self] in self?.typeApostrophe() }
         candBar.onMic = { [weak self] in self?.micTapped() }
         candBar.onGear = { [weak self] in self?.toggleSettings() }
         candBar.onXmark = { [weak self] in self?.closePredictions() }
@@ -998,6 +1225,11 @@ final class KeyboardViewController: UIInputViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if userSave != nil { saveUser() }      // 键盘收起：没来得及存的学习记录马上存（扩展随时可能被系统结束）
+        if let r = rootView {
+            r.cancelAll()
+            if r.stats.down >= 20 { qlog("触摸统计 " + r.stats.summary) }      // 看「按了没反应」是哪一种：没按到键 / 被系统取消 / 滑过去改
+            r.resetStats()
+        }
         visible = false
         hideEpoch &+= 1
         refreshTimer?.invalidate()
@@ -1018,11 +1250,13 @@ final class KeyboardViewController: UIInputViewController {
     private var funcColor: UIColor { UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.26, alpha: 1) : UIColor(white: 0.68, alpha: 1) } }
     private var funcPressed: UIColor { UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.42, alpha: 1) : .white } }
 
-    // 按键尺寸：字母键高 49（55 时用户嫌「高了显得窄、更不好按」，10-23 改回来并把横向挤宽：边距 2、列缝 3 → 键宽约 37），底排矮一点 42；
-    // 键盘总高 = 上边 2 + 候选栏 58 + 4 + 三排字母 3×49 + 三道缝 3×6 + 底排 42 + 下边 4 = 275
-    static let letterRowH: CGFloat = 49
+    // 按键尺寸：10-23 用户嫌键「高了显得窄、更不好按」→ 高 49、列缝 3（键宽约 37）；10-25 又嫌「键之间的缝太窄、容易误触」（豆包是缝 6 × 12、键 34 × 43）→
+    // 字母键高 47、列缝 5（键宽约 34，宽高比 0.72）、行缝 9。视觉上缝大了，但触摸不受影响：手指落在缝里归最近的键（KeyboardRoot），没有死角。
+    // 键盘总高 = 上边 2 + 候选栏 58 + 4 + 三排字母 3×47 + 三道缝 3×9 + 底排 42 + 下边 4 = 278
+    static let letterRowH: CGFloat = 47
     static let bottomRowH: CGFloat = 42
-    static let rowGap: CGFloat = 6
+    static let rowGap: CGFloat = 9
+    static let colGap: CGFloat = 5
     static let keyboardHeight: CGFloat = 2 + CandidateBar.height + 4 + 3 * letterRowH + 3 * rowGap + bottomRowH + 4
 
     private func build() {
@@ -1032,6 +1266,11 @@ final class KeyboardViewController: UIInputViewController {
         keyArea.distribution = .fill      // 每一排的高度单独定（sizeRows），不再平分
         let root = KeyboardRoot(arrangedSubviews: [candBar, keyArea])
         root.keyArea = keyArea
+        root.isMultipleTouchEnabled = true      // 每根手指单独跟踪：连打、两个拇指交替不互相顶掉
+        root.onKeyDown = { [weak self] k in self?.keyFeedback(); self?.showPreview(k) }
+        root.onKeyMoved = { [weak self] k, alt in self?.showPreview(k, text: alt) }      // 手指滑到别的键 / 上滑：气泡跟着走，不再响
+        root.onKeyUp = { [weak self] in self?.hidePreview() }
+        rootView = root
         root.axis = .vertical
         root.spacing = 4
         root.translatesAutoresizingMaskIntoConstraints = false
@@ -1065,15 +1304,23 @@ final class KeyboardViewController: UIInputViewController {
         rebuildKeys()
     }
 
-    /// 一个按键。字母键 / 符号键 / 功能键都用 touchDown（按下就打出去）
+    /// 一个按键。真手指的触摸由 KeyboardRoot 接线：字母 / 符号键（preview）按下冒气泡、松手才打（手指滑到哪个键打哪个）；功能键一按下就响应。
+    /// 下面的 touchDown 事件是没有真手指的路（测试、辅助功能）：一次 touchDown = 按下 + 松手。
     private func key(_ title: String? = nil, symbol: String? = nil, isFunction: Bool = false, font: CGFloat = 20, preview: Bool = false,
                      _ action: @escaping () -> Void) -> KeyButton {
         let b = styled(title, symbol: symbol, isFunction: isFunction, font: font)
-        b.addAction(UIAction { [weak self] _ in self?.keyFeedback() }, for: .touchDown)
-        b.addAction(UIAction { _ in action() }, for: .touchDown)
-        if preview {      // 按下冒出放大的气泡，松手收起
-            b.addAction(UIAction { [weak self, weak b] _ in if let b { self?.showPreview(b) } }, for: .touchDown)
+        if preview {
+            b.commitsOnRelease = true
+            b.onCommit = action
+            b.addAction(UIAction { [weak self, weak b] _ in
+                self?.keyFeedback()
+                if let b { self?.showPreview(b) }
+                action()
+            }, for: .touchDown)
             b.addAction(UIAction { [weak self] _ in self?.hidePreview() }, for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        } else {
+            b.addAction(UIAction { [weak self] _ in self?.keyFeedback() }, for: .touchDown)
+            b.addAction(UIAction { _ in action() }, for: .touchDown)
         }
         return b
     }
@@ -1113,8 +1360,8 @@ final class KeyboardViewController: UIInputViewController {
         rebuildKeys()
     }
 
-    private func showPreview(_ k: KeyButton) {
-        guard let t = k.currentTitle, !t.isEmpty else { return }
+    private func showPreview(_ k: KeyButton, text: String? = nil) {
+        guard let t = text ?? k.currentTitle, !t.isEmpty else { return }
         previewHide?.cancel()
         preview.show(t, over: k, in: view, fill: keyColor)
     }
@@ -1156,7 +1403,7 @@ final class KeyboardViewController: UIInputViewController {
     private func hRow(_ views: [UIView], equal: Bool = false) -> UIStackView {
         let s = UIStackView(arrangedSubviews: views)
         s.axis = .horizontal
-        s.spacing = 3
+        s.spacing = Self.colGap
         s.distribution = equal ? .fillEqually : .fill
         return s
     }
@@ -1181,7 +1428,9 @@ final class KeyboardViewController: UIInputViewController {
         case .letters: buildLetters()
         case .numbers: buildNumbers()
         }
+        rootView?.invalidateKeys()
         sizeRows()
+        refreshReturn(force: true)
         refreshLetterTitles()
         applyMic()
         applySpaceWave()
@@ -1206,6 +1455,7 @@ final class KeyboardViewController: UIInputViewController {
         func letter(_ c: String) -> KeyButton {
             let k = key(c.uppercased(), font: 24, preview: true) { [weak self] in self?.typeLetter(c) }
             letterKeys.append((k, c))
+            if let alt = swipeAlt(c) { addSwipeUp(k, alt) }
             return k
         }
         let r1 = "qwertyuiop".map { letter(String($0)) }
@@ -1236,6 +1486,39 @@ final class KeyboardViewController: UIInputViewController {
         width(del, r3[0], 1.4)
 
         addBottomRow(first: "123", unit: r1[0]) { [weak self] in self?.switchLayer(.numbers) }
+    }
+
+    /// 字母键上滑能打的数字 / 符号（二期；手指要还在原来的键上、往上滑 16pt 以上，松手打出来，气泡里先显示）
+    private func swipeAlt(_ c: String) -> String? {
+        let digits: [String: String] = ["q": "1", "w": "2", "e": "3", "r": "4", "t": "5", "y": "6", "u": "7", "i": "8", "o": "9", "p": "0"]
+        if let d = digits[c] { return d }
+        let zh: [String: String] = ["a": "～", "s": "！", "d": "@", "f": "#", "g": "%", "h": "……", "j": "&", "k": "*", "l": "（",
+                                    "z": "）", "x": "-", "c": "/", "v": "：", "b": "；", "n": "？", "m": "、"]
+        let en: [String: String] = ["a": "~", "s": "!", "d": "@", "f": "#", "g": "$", "h": "%", "j": "&", "k": "*", "l": "(",
+                                    "z": ")", "x": "-", "c": "/", "v": ":", "b": ";", "n": "?", "m": "'"]
+        return (chinese ? zh : en)[c]
+    }
+
+    private func addSwipeUp(_ k: KeyButton, _ alt: String) {
+        k.swipeUp = (alt, { [weak self] in self?.typeAlt(alt) })
+        let hint = UILabel()
+        hint.text = alt
+        hint.font = .systemFont(ofSize: 9)
+        hint.textColor = .secondaryLabel
+        hint.alpha = 0.75
+        hint.isUserInteractionEnabled = false
+        hint.translatesAutoresizingMaskIntoConstraints = false
+        k.addSubview(hint)
+        NSLayoutConstraint.activate([
+            hint.topAnchor.constraint(equalTo: k.topAnchor, constant: 2),
+            hint.trailingAnchor.constraint(equalTo: k.trailingAnchor, constant: -3),
+        ])
+    }
+
+    /// 上滑打出来的数字 / 符号：正在拼的字母先原样落下，再打它
+    private func typeAlt(_ s: String) {
+        commitRaw()
+        typeSymbol(s)
     }
 
     private func buildNumbers() {
@@ -1280,6 +1563,7 @@ final class KeyboardViewController: UIInputViewController {
         views.append(space)
         let ret = key(symbol: "return", isFunction: true) { [weak self] in self?.typeReturn() }
         ret.accessibilityIdentifier = "return"
+        returnKey = ret
         views.append(ret)
         fixed.append((ret, 1.8))
         for v in views where v !== space { v.setContentHuggingPriority(.defaultHigh, for: .horizontal) }
@@ -1289,7 +1573,6 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: 「，。」合并键
 
-    private var punctStart = CGPoint.zero
     private var punctTimer: Timer?
     private var punctLong = false      // 已经按够久、句号打出去了，松手不再打逗号
 
@@ -1314,16 +1597,15 @@ final class KeyboardViewController: UIInputViewController {
             hint.topAnchor.constraint(equalTo: k.topAnchor, constant: 3),
             hint.trailingAnchor.constraint(equalTo: k.trailingAnchor, constant: -5),
         ])
-        k.addTarget(self, action: #selector(punctDown(_:event:)), for: .touchDown)
-        k.addTarget(self, action: #selector(punctUp(_:event:)), for: [.touchUpInside, .touchUpOutside])
+        k.addTarget(self, action: #selector(punctDown(_:)), for: .touchDown)
+        k.addTarget(self, action: #selector(punctUp(_:)), for: [.touchUpInside, .touchUpOutside])
         k.addTarget(self, action: #selector(punctCancel), for: .touchCancel)
         return k
     }
 
-    @objc private func punctDown(_ b: UIControl, event: UIEvent) {
+    @objc private func punctDown(_ b: UIControl) {
         keyFeedback()
         punctLong = false
-        punctStart = event.touches(for: b)?.first?.location(in: view) ?? .zero
         punctTimer?.invalidate()
         punctTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             guard let self else { return }
@@ -1332,12 +1614,11 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    @objc private func punctUp(_ b: UIControl, event: UIEvent) {
+    @objc private func punctUp(_ b: UIControl) {
         punctTimer?.invalidate()
         punctTimer = nil
         if punctLong { punctLong = false; return }
-        let end = event.touches(for: b)?.first?.location(in: view) ?? punctStart
-        let period = Self.punctPicksPeriod(dy: end.y - punctStart.y)
+        let period = Self.punctPicksPeriod(dy: (b as? KeyButton)?.dragDelta.y ?? 0)
         typePunct(chinese ? (period ? "。" : "，") : (period ? "." : ","))
     }
 
@@ -1363,6 +1644,7 @@ final class KeyboardViewController: UIInputViewController {
     /// 🌐 切换输入法的键（系统要求：需要时必须有）
     private func makeGlobeKey() -> KeyButton {
         let g = styled(symbol: "globe", isFunction: true)
+        g.routed = false      // 要系统给的真实触摸事件才能弹输入法列表
         g.addTarget(self, action: #selector(handleInputModeList(from:with:)), for: .allTouchEvents)
         return g
     }
@@ -1417,6 +1699,7 @@ final class KeyboardViewController: UIInputViewController {
             hint.bottomAnchor.constraint(equalTo: space.bottomAnchor, constant: -3),
         ])
         spaceHint = hint
+        space.onDrag = { [weak self] dx, dy in self?.spaceDrag(dx, dy) ?? false }
         space.addTarget(self, action: #selector(spaceDown), for: .touchDown)
         space.addTarget(self, action: #selector(spaceUp), for: .touchUpInside)
         space.addTarget(self, action: #selector(spaceAway), for: [.touchUpOutside, .touchCancel])
@@ -1486,6 +1769,7 @@ final class KeyboardViewController: UIInputViewController {
         clear.accessibilityIdentifier = "t9-clear"
         let ret = key(symbol: "return", isFunction: true) { [weak self] in self?.typeReturn() }
         ret.accessibilityIdentifier = "return"
+        returnKey = ret
         let rightCol = UIStackView(arrangedSubviews: [del, clear, ret])
         rightCol.axis = .vertical
         rightCol.spacing = g
@@ -1574,6 +1858,7 @@ final class KeyboardViewController: UIInputViewController {
     private func deleteKey() -> KeyButton {
         let del = styled(symbol: "delete.left", isFunction: true)
         del.accessibilityIdentifier = "delete"
+        del.onDrag = { [weak self] dx, dy in self?.deleteDrag(dx, dy) ?? false }
         del.addTarget(self, action: #selector(delDown), for: .touchDown)
         del.addTarget(self, action: #selector(delUp), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         return del
@@ -1617,7 +1902,7 @@ final class KeyboardViewController: UIInputViewController {
         if composing {
             // 拼音行只显示用户打的字母（纠错只在后台改候选，不改、不标记用户打的字）
             let comp = chinese ? (nineSyll != nil ? nineComp() : (engine?.display(buffer) ?? buffer)) : buffer
-            candBar.showCandidates(comp: comp, items: cands.map { $0.text }, apostrophe: chinese)
+            candBar.showCandidates(comp: comp, items: cands.map { $0.text })
         } else if recordingNow {
             candBar.showWave()
         } else if statusText.isEmpty || statusHint, !predictions.isEmpty {
@@ -1626,7 +1911,7 @@ final class KeyboardViewController: UIInputViewController {
             candBar.showStatus(statusText, statusColor)
         }
         if !composing, panelOpen { closePanel() }
-        candBar.showUndo(!composing && !live.isEmpty && liveFinal && liveSID != dead)
+        candBar.showUndo(!composing && (!clearedText.isEmpty || (!live.isEmpty && liveFinal && liveSID != dead)))
         refreshNine()
     }
 
@@ -1661,6 +1946,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func typed() {
         lastAction = Date()
+        clearedText = ""        // 接着打字了，左滑清空的「撤销」不再给
         userTyped()
     }
 
@@ -1690,8 +1976,19 @@ final class KeyboardViewController: UIInputViewController {
         updateCandidates()
     }
 
+    /// 3。5 → 3.5（二期智能标点）：数字后面打了中文句号、紧接着又打数字，句号要改成小数点
+    static func shouldFixDecimal(before ctx: String?, typing s: String) -> Bool {
+        guard s.count == 1, let c = s.first, c.isASCII, c.isNumber, let ctx, ctx.hasSuffix("。"), let b = ctx.dropLast().last else { return false }
+        return b.isASCII && b.isNumber
+    }
+
     private func typeSymbol(_ s: String) {
         typed()
+        if Self.shouldFixDecimal(before: textDocumentProxy.documentContextBeforeInput, typing: s) {
+            textDocumentProxy.deleteBackward()
+            textDocumentProxy.insertText(".")
+        }
+        symbolSink?(s)
         textDocumentProxy.insertText(s)
         addCtx(s)
         updatePredictions()
@@ -1713,6 +2010,36 @@ final class KeyboardViewController: UIInputViewController {
             addCtx(" ")
             predictions = []
             refreshBar()
+        }
+    }
+
+    /// 回车键按输入框的要求换字：发送 / 搜索 / 前往 / 完成 / 下一项…（二期；绿底白字，跟豆包的「确定」一样醒目）；平常的换行还是那个图标
+    func refreshReturn(force: Bool = false) {
+        guard let k = returnKey else { return }
+        let title: String?
+        switch returnTypeProbe?() ?? textDocumentProxy.returnKeyType ?? .default {
+        case .send: title = "发送"
+        case .search, .google, .yahoo: title = "搜索"
+        case .go: title = "前往"
+        case .done: title = "完成"
+        case .next: title = "下一项"
+        case .join: title = "加入"
+        default: title = nil
+        }
+        if !force, let shown = shownReturn, shown == title { return }
+        shownReturn = .some(title)
+        if let t = title {
+            k.setImage(nil, for: .normal)
+            k.setTitle(t, for: .normal)
+            k.titleLabel?.font = .systemFont(ofSize: 16, weight: .medium)
+            k.setTitleColor(.white, for: .normal)
+            k.normalColor = Brand.green
+            k.pressedColor = Brand.deep
+        } else {
+            k.setTitle(nil, for: .normal)
+            k.setImage(UIImage(systemName: "return", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium)), for: .normal)
+            k.normalColor = funcColor
+            k.pressedColor = funcPressed
         }
     }
 
@@ -1824,7 +2151,14 @@ final class KeyboardViewController: UIInputViewController {
             let r = nine
                 ? (e?.t9Candidates(buf, limit: limit, expanded: expanded, ctx: ctx) ?? [])
                 : (e?.candidates(buf, limit: limit, expanded: expanded, ctx: ctx) ?? [])
-            return r.isEmpty ? [PinyinCandidate(text: buf.replacingOccurrences(of: "'", with: ""), consume: buf.count, kind: .raw)] : r
+            var out = r.isEmpty ? [PinyinCandidate(text: buf.replacingOccurrences(of: "'", with: ""), consume: buf.count, kind: .raw)] : r
+            // 中英混输（二期）：打的字母本身是个常见英文词 / 缩写（wifi、ok、ppt…）就加一条英文候选：拼音盖不住整串时排第一，盖得住就排第三
+            if !nine, let en = words?.mixedWord(buf) {
+                let cand = PinyinCandidate(text: en, consume: buf.count, kind: .raw)
+                let covered = out.first.map { $0.consume >= buf.count } ?? false
+                out.insert(cand, at: covered ? min(2, out.count) : 0)
+            }
+            return out
         }
         // 英文：第一个是照打的原样（按空格落下的就是它），后面是按词频排的联想
         var out = [PinyinCandidate(text: buf, consume: buf.count, kind: .raw)]
@@ -1925,7 +2259,7 @@ final class KeyboardViewController: UIInputViewController {
         textDocumentProxy.insertText(c.text)
         addCtx(c.text)
         buffer = c.consume >= buffer.count ? "" : String(buffer.dropFirst(c.consume))
-        noteCommit(c, letters: letters)
+        if !c.text.unicodeScalars.contains(where: { $0.isASCII }) { noteCommit(c, letters: letters) }      // 混输的英文词不进中文个人学习
         updateCandidates()
     }
 
@@ -1987,7 +2321,7 @@ final class KeyboardViewController: UIInputViewController {
             if needForeignCheck || leftOver { needForeignCheck = false; dropForeignVoice() }
         }
         // 按住说话时手指已经不在空格上了（松手事件没收到）：结束录音
-        if pttActive, !(spaceKey?.isTracking ?? false) { pttEnd() }
+        if pttActive, !(spaceKey?.held ?? false) { pttEnd() }
         render()
         applySpaceWave()
         let a = s.app
@@ -2141,15 +2475,41 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    // 按住空格说话：按够 0.3 秒开始录，松手结束；轻点还是打空格
+    // 按住空格说话：按够 0.4 秒开始录，松手结束；轻点还是打空格（原来 0.3 秒，慢一点点的点按会误触发语音、甚至跳去主 App，10-25 改 0.4）；
+    // 按住后左右滑动 = 移光标（二期），一滑就不再算「按住说话」
     @objc private func spaceDown() {
         keyFeedback()
         spaceLong = false
+        spaceSwiping = false
         spaceTimer?.invalidate()
-        spaceTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+        spaceTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             self?.spaceLong = true
             self?.pttStart()
         }
+    }
+
+    /// 在空格上横着滑：每滑 14pt 光标挪一个字。已经在说话（按住够久）就不挪
+    private func spaceDrag(_ dx: CGFloat, _ dy: CGFloat) -> Bool {
+        if spaceLong || pttActive { return false }
+        if !spaceSwiping {
+            guard abs(dx) >= 12, abs(dx) > abs(dy) else { return false }
+            spaceSwiping = true
+            spaceTimer?.invalidate()
+            spaceTimer = nil
+            commitRaw()
+            spaceSteps = 0
+        }
+        let steps = Int((dx / 14).rounded(.towardZero))
+        if steps != spaceSteps {
+            textDocumentProxy.adjustTextPosition(byCharacterOffset: steps - spaceSteps)
+            cursorProbe?(steps - spaceSteps)
+            spaceSteps = steps
+            ctxTail = ""
+            predictions = []
+            refreshBar()
+            if hapticOn { haptic.impactOccurred(intensity: 0.5) }
+        }
+        return true
     }
 
     @objc private func spaceUp() {
@@ -2166,6 +2526,7 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func spaceAway() {
         spaceTimer?.invalidate()
         spaceTimer = nil
+        spaceSwiping = false
         if spaceLong {
             spaceLong = false
             pttEnd()
@@ -2465,6 +2826,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func undoVoice() {
+        if !clearedText.isEmpty { undoClear(); return }
         if stillAtEnd() { for _ in 0..<live.count { textDocumentProxy.deleteBackward() } }
         dead = liveSID
         live = ""
@@ -2475,6 +2837,8 @@ final class KeyboardViewController: UIInputViewController {
 
     @objc private func delDown() {
         keyFeedback()
+        clearing = false
+        pressDeleted = composing ? nil : contextBefore()?.last.map { String($0) }
         deleteOnce()
         deleteTimer?.invalidate()
         deleteTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
@@ -2487,5 +2851,49 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func delUp() {
         deleteTimer?.invalidate()
         deleteTimer = nil
+    }
+
+    /// 在删除键上往左滑（二期）：滑过 60pt 就清空——正在拼的拼音清掉重来；否则清掉光标前面的字，清掉的字暂存起来，顶栏出「撤销」能原样放回去
+    private func deleteDrag(_ dx: CGFloat, _ dy: CGFloat) -> Bool {
+        guard dx < -60, -dx > abs(dy) * 1.5 else { return clearing }
+        if !clearing {
+            clearing = true
+            deleteTimer?.invalidate()
+            deleteTimer = nil
+            clearAll()
+        }
+        return true
+    }
+
+    private func clearAll() {
+        typed()
+        if composing {
+            buffer = ""
+            cands = []
+            updatePredictions()
+            refreshBar()
+            return
+        }
+        var removed = ""
+        var budget = 3000
+        while budget > 0, let ctx = textDocumentProxy.documentContextBeforeInput, !ctx.isEmpty {
+            removed = ctx + removed
+            budget -= ctx.count
+            for _ in 0..<ctx.count { textDocumentProxy.deleteBackward() }
+        }
+        ctxTail = ""
+        predictions = []
+        clearedText = removed + (pressDeleted ?? "")      // 按下去那一下已经删掉的那个字也算进去
+        refreshBar()
+    }
+
+    /// 把刚才左滑清掉的字放回去
+    private func undoClear() {
+        guard !clearedText.isEmpty else { return }
+        textDocumentProxy.insertText(clearedText)
+        ctxTail = String(clearedText.suffix(12))
+        clearedText = ""
+        updatePredictions()
+        refreshBar()
     }
 }

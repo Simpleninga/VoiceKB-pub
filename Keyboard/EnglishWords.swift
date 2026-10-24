@@ -25,4 +25,21 @@ final class EnglishWords {
         }
         return out
     }
+
+    /// 中文拼音输入时，打的字母本身是个常见英文词 / 缩写（wifi、ok、ppt…）就返回要给的英文候选（缩写给大写写法）；不是就 nil。
+    /// 三个字母以下的普通词不管（an、me、he 同时是拼音，别抢）；只收缩写白名单
+    private static let known: [String: String] = [
+        "wifi": "WiFi", "ok": "OK", "ppt": "PPT", "pdf": "PDF", "vip": "VIP", "id": "ID", "ip": "IP", "qq": "QQ", "ai": "AI", "pc": "PC",
+        "usb": "USB", "gps": "GPS", "cpu": "CPU", "vpn": "VPN", "iphone": "iPhone", "ipad": "iPad", "ios": "iOS", "api": "API", "gpt": "GPT",
+        "ktv": "KTV", "atm": "ATM", "app": "App", "excel": "Excel", "word": "Word", "wechat": "WeChat", "mac": "Mac", "tiktok": "TikTok",
+        "pdca": "PDCA", "hr": "HR", "ceo": "CEO", "ui": "UI", "ux": "UX", "bug": "bug", "his": "HIS", "crm": "CRM", "icu": "ICU", "ct": "CT",
+    ]
+
+    func mixedWord(_ buf: String) -> String? {
+        guard buf.count >= 2, buf.count <= 16, buf.allSatisfy({ $0.isASCII && $0.isLetter }) else { return nil }
+        let l = buf.lowercased()
+        if let w = Self.known[l] { return w }
+        guard l.count >= 4, let first = l.utf8.first, let list = buckets[first], list.contains(l) else { return nil }
+        return buf
+    }
 }
