@@ -1,0 +1,88 @@
+name: ios
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # 拼音引擎：Swift 版（键盘里用的）和 Python 参考版（tools/pyengine.py）对拍，输出必须一字不差；第二轮带上个人学习的样本（tools/user_test.txt）
+      - name: Pinyin engine parity (Swift vs Python)
+        run: |
+          swiftc -O Keyboard/Syllables.swift Keyboard/LanguageModel.swift Keyboard/UserModel.swift Keyboard/PinyinEngine.swift tools/EngineTest/main.swift -o /tmp/enginetest
+          CASES=()
+          while IFS= read -r l; do CASES+=("$l"); done < tools/engine_cases.txt
+          /tmp/enginetest Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat "${CASES[@]}" > /tmp/swift.txt
+          python3 tools/pyengine.py Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat "${CASES[@]}" > /tmp/py.txt
+          cat /tmp/swift.txt
+          diff /tmp/swift.txt /tmp/py.txt && echo "PARITY OK"
+          UCASES=()
+          while IFS= read -r l; do UCASES+=("$l"); done < tools/engine_cases_user.txt
+          /tmp/enginetest Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat --user=tools/user_test.txt "${UCASES[@]}" > /tmp/swift_u.txt
+          python3 tools/pyengine.py Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat --user=tools/user_test.txt "${UCASES[@]}" > /tmp/py_u.txt
+          diff /tmp/swift_u.txt /tmp/py_u.txt && echo "PARITY (USER) OK"
+
+      # 速度：每句一个字母一个字母地打，量每次出候选多久（Release 编译；CI 的 Mac 和近几年的 iPhone 单核差不多）
+      - name: Pinyin engine speed
+        run: |
+          /tmp/enginetest Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat --bench tools/bench/data/chat.tsv tools/bench/data/chat_typo.tsv
+          /tmp/enginetest Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat --user=tools/user_test.txt --bench tools/bench/data/chat.tsv tools/bench/data/chat_typo.tsv
+
+      # 跑分：整句首选低于 tools/bench/baseline.json 就判失败（改引擎 / 词库 / 模型不许退步）；个人学习的留出测试只打印
+      - name: Pinyin engine bench
+        run: |
+          python3 tools/bench/bench.py --check
+          python3 tools/bench/learn.py tools/bench/data/chat.tsv --seed=2
+
+      # 键盘冒烟测试：在 iOS 模拟器里把键盘真的加载一遍、点几个键（约束放错之类的运行时崩溃只有这样才查得出来）
+      - name: Keyboard smoke test (simulator)
+        run: |
+          set -o pipefail
+          xcodegen generate
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          for rt, ds in json.load(sys.stdin)['devices'].items():
+              if 'iOS' not in rt: continue
+              for d in ds:
+                  if d['name'].startswith('iPhone') and d['isAvailable']:
+                      print(d['udid']); sys.exit(0)")
+          echo "simulator $UDID"
+          xcodebuild test -project VoiceKB.xcodeproj -scheme VoiceKBTests -destination "id=$UDID" \
+            -derivedDataPath build-test CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" 2>&1 \
+            | tee /tmp/xct.log | grep -E "Test Case .*(passed|failed)|error:|XCTAssert|Executed [0-9]+ tests" | tail -120
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kb-screenshots
+          path: /tmp/kbshots
+          if-no-files-found: ignore
+          retention-days: 3
+
+      # 版本号每次编都涨（1.<run_number>）：iPhone 上 SideStore 靠它认出新版
+      - name: Build unsigned IPA
+        run: |
+          xcodegen generate
+          xcodebuild -project VoiceKB.xcodeproj -scheme VoiceKB -configuration Release \
+            -sdk iphoneos -derivedDataPath build -quiet \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            MARKETING_VERSION=1.$((${{ github.run_number }} + 60)) CURRENT_PROJECT_VERSION=$((${{ github.run_number }} + 60)) build
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/VoiceKB.app Payload/
+          ls -la Payload/VoiceKB.app Payload/VoiceKB.app/PlugIns
+          zip -qry VoiceKB.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoiceKB-ipa
+          path: VoiceKB.ipa
+          retention-days: 14

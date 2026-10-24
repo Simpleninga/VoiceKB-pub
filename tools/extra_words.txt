@@ -1,0 +1,54 @@
+# 补词表：雾凇词库里没有、或权重被压得太低的口语 / 网络用语 / 用户常打的专有名词。
+# 格式：词<TAB>拼音（空格隔开，一字一音节）<TAB>权重（和雾凇同一尺度：1000≈ln 6.9、5000≈8.5、9999≈9.2）。
+# tools/build_dict.py 读它；同一个（词，拼音）已经有的话取较大的权重。词少而准，别当成大词库灌。
+天胡	tian hu	20000
+地胡	di hu	5000
+杠上开花	gang shang kai hua	8000
+胡牌	hu pai	12000
+欧皇	ou huang	8000
+肝帝	gan di	5000
+蚌埠住了	beng bu zhu le	5000
+整活	zheng huo	12000
+薅羊毛	hao yang mao	8000
+割韭菜	ge jiu cai	8000
+嘴替	zui ti	10000
+奥利给	ao li gei	8000
+爷青回	ye qing hui	5000
+谁懂啊	shui dong a	2000
+谁懂啊	shei dong a	2000
+属于是	shu yu shi	2500
+格局打开	ge ju da kai	2500
+泰裤辣	tai ku la	5000
+显眼包	xian yan bao	8000
+松弛感	song chi gan	3000
+人间清醒	ren jian qing xing	3000
+精神内耗	jing shen nei hao	3000
+情绪价值	qing xu jia zhi	3000
+班味	ban wei	5000
+离大谱	li da pu	2500
+氛围感	fen wei gan	3000
+高级感	gao ji gan	3000
+仪式感	yi shi gan	5000
+绝绝子	jue jue zi	2500
+打工人	da gong ren	3000
+干饭人	gan fan ren	2500
+恰饭	qia fan	12000
+饭搭子	fan da zi	2000
+内卷	nei juan	5000
+破圈	po quan	2500
+出圈	chu quan	3000
+社牛	she niu	3000
+卷王	juan wang	2500
+躺赢	tang ying	2500
+塌房	ta fang	3000
+裸辞	luo ci	2500
+搞钱	gao qian	3000
+绷不住	beng bu zhu	3000
+太绝了	tai jue le	3000
+小红书	xiao hong shu	6000
+医患通	yi huan tong	5000
+话术库	hua shu ku	4000
+小艺	xiao yi	4000
+企业微信	qi ye wei xin	6000
+唤醒词	huan xing ci	4000
+语音键盘	yu yin jian pan	4000
