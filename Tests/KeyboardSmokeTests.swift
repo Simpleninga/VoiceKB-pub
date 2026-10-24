@@ -10,14 +10,14 @@ final class KeyboardSmokeTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        for k in ["zh", "nine", "haptic", "voiceOwner", "leftSID", "claimTicket", "learn"] { UserDefaults.standard.removeObject(forKey: k) }
+        for k in ["zh", "nine", "haptic", "voiceOwner", "leftSID", "claimTicket", "learn", "fuzzy"] { UserDefaults.standard.removeObject(forKey: k) }
         // 个人学习存到临时文件，每个测试从空的开始（不然前面测试选过的词会改变后面测试的候选顺序）
         KeyboardViewController.userFile = FileManager.default.temporaryDirectory.appendingPathComponent("kbtest-user.txt")
         try? FileManager.default.removeItem(at: KeyboardViewController.userFile)
     }
 
     override func tearDown() {
-        for k in ["zh", "nine", "haptic", "outbox", "voiceOwner", "leftSID", "claimTicket", "learn"] { UserDefaults.standard.removeObject(forKey: k) }
+        for k in ["zh", "nine", "haptic", "outbox", "voiceOwner", "leftSID", "claimTicket", "learn", "fuzzy"] { UserDefaults.standard.removeObject(forKey: k) }
         try? FileManager.default.removeItem(at: KeyboardViewController.userFile)
         super.tearDown()
     }
@@ -1143,5 +1143,42 @@ final class KeyboardSmokeTests: XCTestCase {
             let titles = all(vc.view).compactMap { ($0 as? UIButton)?.currentTitle }
             XCTAssertTrue(titles.contains(want), "\(typed) 应该有英文候选「\(want)」，实际：\(titles.prefix(20))")
         }
+    }
+
+    /// 模糊音（二期）：关着打 si 只出 si 的字；设置里打开 z/zh 后出「是、时」；n/l 同理；设置面板里有四个开关
+    func testFuzzySoundSetting() {
+        let vc = makeKeyboard()
+        for c in ["s", "i"] { tap(vc, c) }
+        var titles = all(vc.view).compactMap { ($0 as? UIButton)?.currentTitle }
+        XCTAssertFalse(titles.contains("是"), "模糊音关着，si 不出 shi 的字：\(titles.prefix(12))")
+        vc.setFuzzy(1)
+        vc.view.layoutIfNeeded()
+        titles = all(vc.view).compactMap { ($0 as? UIButton)?.currentTitle }
+        XCTAssertTrue(titles.contains("是"), "打开 z/zh（含 s/sh）后 si 也出「是」：\(titles.prefix(12))")
+        XCTAssertTrue(titles.contains("四"), "原来的字还在：\(titles.prefix(12))")
+        XCTAssertEqual(UserDefaults.standard.integer(forKey: "fuzzy"), 1)
+        tapID(vc, "delete")
+        tapID(vc, "delete")
+        vc.setFuzzy(2)
+        for c in ["l", "a", "n"] { tap(vc, c) }
+        titles = all(vc.view).compactMap { ($0 as? UIButton)?.currentTitle }
+        XCTAssertTrue(titles.contains("男") || titles.contains("难"), "打开 n/l 后 lan 也出 nan 的字：\(titles.prefix(12))")
+        guard let gear = keys(vc).first(where: { $0.accessibilityIdentifier == "gear" }) else { return XCTFail("没有齿轮") }
+        _ = gear
+    }
+
+    /// 设置面板里四个模糊音小开关：点一下打开、再点关掉，回调带位掩码
+    func testFuzzyChipsInSettingsPanel() {
+        let vc = makeKeyboard()
+        tapID(vc, "gear")
+        vc.view.layoutIfNeeded()
+        let chips = all(vc.view).compactMap { $0 as? UIButton }.filter { ($0.accessibilityIdentifier ?? "").hasPrefix("fuzzy-") }
+        XCTAssertEqual(chips.count, 4, "四个模糊音开关")
+        chips.first(where: { $0.tag == 4 })?.sendActions(for: .touchUpInside)
+        XCTAssertEqual(vc.fuzzMask, 4)
+        chips.first(where: { $0.tag == 1 })?.sendActions(for: .touchUpInside)
+        XCTAssertEqual(vc.fuzzMask, 5)
+        chips.first(where: { $0.tag == 4 })?.sendActions(for: .touchUpInside)
+        XCTAssertEqual(vc.fuzzMask, 1)
     }
 }

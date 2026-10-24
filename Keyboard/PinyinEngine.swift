@@ -308,6 +308,82 @@ final class PinyinEngine {
             .sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1.lexicographicallyPrecedes($1.1) }
     }
 
+    // MARK: 模糊音（二期；说明见 tools/pyengine.py 的「模糊音」一节，两边逐字一致）
+
+    static let fuzzZCS = 1, fuzzNL = 2, fuzzNG = 4, fuzzFH = 8       // z/zh c/ch s/sh；n/l；an/ang en/eng in/ing；f/h
+    static let penFuzz = Int(1.2 * 2048)       // 每个换了的音节的罚分
+    static let fuzzMax = 20                    // 一段最多吃这么多个字母
+    /// 现在打开的模糊音（位掩码；0 = 全关）
+    var fuzz = 0
+
+    private static func altZCS(_ t: [UInt8]) -> [UInt8]? {
+        let c = t[0]
+        guard c == 122 || c == 99 || c == 115 else { return nil }
+        if t.count >= 2, t[1] == 104 { return [c] + t[2...] }
+        return [c, 104] + t[1...]
+    }
+
+    private static func altNL(_ t: [UInt8]) -> [UInt8]? {
+        if t[0] == 110 { return [108] + t[1...] }
+        if t[0] == 108 { return [110] + t[1...] }
+        return nil
+    }
+
+    private static func altNG(_ t: [UInt8]) -> [UInt8]? {
+        let n = t.count
+        if n >= 3, t[n - 1] == 103, t[n - 2] == 110, t[n - 3] == 97 || t[n - 3] == 101 || t[n - 3] == 105 { return Array(t.dropLast()) }
+        if n >= 2, t[n - 1] == 110, t[n - 2] == 97 || t[n - 2] == 101 || t[n - 2] == 105 { return t + [103] }
+        return nil
+    }
+
+    private static func altFH(_ t: [UInt8]) -> [UInt8]? {
+        if t[0] == 102 { return [104] + t[1...] }
+        if t[0] == 104 { return [102] + t[1...] }
+        return nil
+    }
+
+    /// 音节 t 按打开的模糊音能变成的别的音节（都在音节表里），顺序固定，不含 t 自己
+    private func syllVariants(_ t: [UInt8]) -> [[UInt8]] {
+        var out: [[UInt8]] = [t]
+        let rules: [(Int, ([UInt8]) -> [UInt8]?)] = [(Self.fuzzZCS, Self.altZCS), (Self.fuzzNL, Self.altNL), (Self.fuzzNG, Self.altNG), (Self.fuzzFH, Self.altFH)]
+        for (bit, f) in rules where fuzz & bit != 0 {
+            for x in out {
+                if let v = f(x), pinyinSyllables.contains(String(decoding: v, as: UTF8.self)), !out.contains(v) { out.append(v) }
+            }
+        }
+        return Array(out.dropFirst())
+    }
+
+    /// 从 b[i] 起（不越过 end）按模糊音换了至少一个音节就能成词典键的段：按（吃掉几个字母, 词典键）排好的（吃掉几个字母, 词典键, 罚分）；
+    /// 输入原样的键不收；同一段同一个键有几种切法 / 换法的取罚分最小的。沿有序词典按前缀走（每个音节试「原样 + 变体」）
+    private func fuzzEdges(_ b: [UInt8], _ i: Int, _ end: Int) -> [(Int, [UInt8], Int)] {
+        var out: [TypoKey: Int] = [:]
+        func walk(_ x: Int, _ lo: Int, _ hi: Int, _ depth: Int, _ changed: Int) {
+            let k0 = dict.key(lo)
+            if changed > 0, x > i, k0.count == depth, !k0.elementsEqual(b[i..<x]) {
+                let t = TypoKey(p: x - i, key: k0)
+                let pen = changed * Self.penFuzz
+                if let cur = out[t], cur <= pen {} else { out[t] = pen }
+            }
+            if x >= end || x - i >= Self.fuzzMax { return }
+            let prefix = Array(k0.prefix(depth))
+            for l in 1...6 {
+                if x + l > end { break }
+                let t = Array(b[x..<(x + l)])
+                if !pinyinSyllables.contains(String(decoding: t, as: UTF8.self)) { continue }
+                var opts: [([UInt8], Int)] = [(t, 0)]
+                for v in syllVariants(t) { opts.append((v, 1)) }
+                for (v, ch) in opts {
+                    let (a, z) = narrow(lo, hi, prefix + v)
+                    if a < z { walk(x + l, a, z, depth + v.count, changed + ch) }
+                }
+            }
+        }
+        walk(i, 0, dict.count, 0, 0)
+        return out.map { ($0.key.p, $0.key.key, $0.value) }
+            .sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1.lexicographicallyPrecedes($1.1) }
+    }
+
     // MARK: 输入串处理
 
     private struct Split {
@@ -796,6 +872,12 @@ final class PinyinEngine {
                 let r = k.withUnsafeBufferPointer { dict.exact($0.baseAddress!, k.count) }
                 extend(i, i + p, Array(r.prefix(Self.perKey)), pen)
             }
+            if fuzz != 0 {
+                for (p, k, pen) in fuzzEdges(b, i, lim) {
+                    let r = k.withUnsafeBufferPointer { dict.exact($0.baseAddress!, k.count) }
+                    extend(i, i + p, Array(r.prefix(Self.perKey)), pen)
+                }
+            }
         }
         beams[n] = prune(beams[n])
         /// 纠正后的拼音：路径上每个词条的键拼起来；和原样一样就是空串
@@ -820,15 +902,28 @@ final class PinyinEngine {
 
         // 1. 整串刚好是一个词
         var full = okEntries(b, 0, n, s.cuts)
+        var fpen: [Int: Int] = [:]
+        if fuzz != 0, s.cuts.isEmpty {       // 模糊音：整串按模糊音换了音节就成词的，按（权重 - 罚分）并进整词里（打对的同权重排前面）
+            for (p, k, pen) in fuzzEdges(b, 0, n) where p == n {
+                let r = k.withUnsafeBufferPointer { dict.exact($0.baseAddress!, k.count) }
+                for e in r.prefix(60) { fpen[e] = pen }
+            }
+            if !fpen.isEmpty {
+                var sc: [(Int, Int, Int, Int)] = full.enumerated().map { (-dict.rawWeight($0.element), 0, $0.offset, $0.element) }
+                sc += fpen.sorted { $0.key < $1.key }.map { (-dict.rawWeight($0.key) + $0.value, 1, $0.key, $0.key) }
+                sc.sort { ($0.0, $0.1, $0.2, $0.3) < ($1.0, $1.1, $1.2, $1.3) }
+                full = sc.map { $0.3 }
+            }
+        }
         if lm != nil, ctxID >= 0, full.count > 1 {      // 有上文：整词按「接在上文后面」的代价重排（代价相同保持原顺序）
-            full = full.enumerated().map { (k, e) in (stepCost(ctxID, lmID(e), Self.uniBase - dict.rawWeight(e)), k, e) }
+            full = full.enumerated().map { (k, e) in (stepCost(ctxID, lmID(e), Self.uniBase - dict.rawWeight(e)) + (fpen[e] ?? 0), k, e) }
                 .sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }.map { $0.2 }
         }
         if let u, !full.isEmpty, full.contains(where: { u.bonus(ctxw, dict.word($0)) > 0 }) {     // 用过的词往前挪（打折后代价相同保持原顺序）
             full = full.enumerated().map { (k, e) -> (Int, Int, Int) in
                 let uni = Self.uniBase - dict.rawWeight(e)
                 let base = lm != nil && ctxID >= 0 ? stepCost(ctxID, lmID(e), uni) : uni
-                return (base - u.bonus(ctxw, dict.word(e)), k, e)
+                return (base - u.bonus(ctxw, dict.word(e)) + (fpen[e] ?? 0), k, e)
             }.sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }.map { $0.2 }
         }
         // 自造词：键正好是整个输入串的，排在最前面（用得多的在前）

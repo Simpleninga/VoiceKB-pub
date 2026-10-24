@@ -18,6 +18,10 @@ if let f = args.first, f.hasPrefix("--user=") {      // 个人学习：--user=�
     engine.user = UserModel(text: (try? String(contentsOfFile: String(f.dropFirst(7)), encoding: .utf8)) ?? "")
     args.removeFirst()
 }
+if let f = args.first, f.hasPrefix("--fuzzy=") {      // 模糊音：--fuzzy=位掩码（1 z/zh c/ch s/sh，2 n/l，4 an/ang en/eng in/ing，8 f/h）
+    engine.fuzz = Int(f.dropFirst(8)) ?? 0
+    args.removeFirst()
+}
 // 量速度：enginetest pinyin.dat lm.dat [--user=…] --bench 测试集.tsv…（原句\t拼音）：每句一个字母一个字母地打，量每次出候选要多久
 if args.first == "--bench" {
     var ms: [Double] = []

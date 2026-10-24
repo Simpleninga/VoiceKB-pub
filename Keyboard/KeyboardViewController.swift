@@ -708,9 +708,11 @@ final class SyllableColumn: UIScrollView {
     @objc private func tappedNear(_ b: UIButton, event: UIEvent?) { if tapIsNear(b, event, scroll: self) { onPick?(b.tag) } }
 }
 
-/// 键盘设置面板（顶栏的齿轮打开，盖住按键区）：按键震动开关、拼音键盘 26键 / 九键
+/// 键盘设置面板（顶栏的齿轮打开，盖住按键区；内容多了可以上下滑）：按键震动开关、拼音键盘 26键 / 九键、记住我的用词、模糊音
 final class SettingsPanel: UIView {
     let haptic = UISwitch()
+    private(set) var fuzzyChips: [UIButton] = []
+    var onFuzzy: ((Int) -> Void)?       // 打开的模糊音位掩码（1 z/zh c/ch s/sh，2 n/l，4 an/ang en/eng in/ing，8 f/h）
     let layoutSeg = UISegmentedControl(items: ["26键", "九键"])
     let learn = UISwitch()
     let clearLearn = UIButton(type: .custom)
@@ -770,15 +772,46 @@ final class SettingsPanel: UIView {
         note.font = .systemFont(ofSize: 12)
         note.textColor = .secondaryLabel
         note.numberOfLines = 0
-        let v = UIStackView(arrangedSubviews: [head, row("按键震动", haptic), row("拼音键盘", layoutSeg), row("记住我的用词", learnBox), note])
+        // 模糊音（二期）：说话带口音、z/zh n/l an/ang f/h 分不清的人打开；四个小开关一排
+        func chip(_ t: String, _ bit: Int) -> UIButton {
+            let b = UIButton(type: .custom)
+            b.setTitle(t, for: .normal)
+            b.titleLabel?.font = .systemFont(ofSize: 15, weight: .medium)
+            b.setTitleColor(.label, for: .normal)
+            b.setTitleColor(.white, for: .selected)
+            b.layer.cornerRadius = 8
+            b.tag = bit
+            b.accessibilityIdentifier = "fuzzy-\(bit)"
+            b.addTarget(self, action: #selector(fuzzyTapped(_:)), for: .touchUpInside)
+            fuzzyChips.append(b)
+            return b
+        }
+        let chips = UIStackView(arrangedSubviews: [chip("z/zh", 1), chip("n/l", 2), chip("an/ang", 4), chip("f/h", 8)])
+        chips.distribution = .fillEqually
+        chips.spacing = 8
+        chips.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        let fuzzyNote = label("模糊音（口音重时打开）：z/zh 含 c/ch、s/sh；an/ang 含 en/eng、in/ing。打开后打 si 也会出「是、时」。", 12, .secondaryLabel)
+        fuzzyNote.numberOfLines = 0
+        let v = UIStackView(arrangedSubviews: [head, row("按键震动", haptic), row("拼音键盘", layoutSeg), row("记住我的用词", learnBox), label("模糊音", 17, .label), chips, fuzzyNote, note])
         v.axis = .vertical
         v.spacing = 12
         v.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(v)
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.showsVerticalScrollIndicator = false
+        scroll.accessibilityIdentifier = "settings-scroll"
+        addSubview(scroll)
+        scroll.addSubview(v)
         NSLayoutConstraint.activate([
-            v.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
-            v.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            v.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            v.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 18),
+            v.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -18),
+            v.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 8),
+            v.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -10),
+            v.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -36),
         ])
     }
 
@@ -786,14 +819,25 @@ final class SettingsPanel: UIView {
 
     /// 打开面板时把开关摆成当前的值
     /// learned = 已经记住了几条；cleared = 刚点过清空（说明文字里写一声，不弹窗）
-    func sync(haptic on: Bool, nine: Bool, fullAccess: Bool, learn learnOn: Bool = true, learned: Int = 0, cleared: Bool = false) {
+    func sync(haptic on: Bool, nine: Bool, fullAccess: Bool, learn learnOn: Bool = true, learned: Int = 0, cleared: Bool = false, fuzzy: Int = 0) {
         haptic.isOn = on
+        for c in fuzzyChips { paint(c, on: fuzzy & c.tag != 0) }
         layoutSeg.selectedSegmentIndex = nine ? 1 : 0
         learn.isOn = learnOn
         clearLearn.isHidden = !learnOn || learned == 0
         let tip = fullAccess ? "九键：中间是 ABC / DEF…，左边点音节可以选定拼哪个。" : "按键震动要在 设置 → 通用 → 键盘 → 键盘 → 芽音 里打开「允许完全访问」才有。"
         let mem = cleared ? "学习记录已清空。" : (learnOn ? "选过的词、说过的话只存在这台手机上，常用的会排到前面（已记住 \(learned) 条）。" : "")
         note.text = mem.isEmpty ? tip : mem + "\n" + tip
+    }
+
+    private func paint(_ c: UIButton, on: Bool) {
+        c.isSelected = on
+        c.backgroundColor = on ? Brand.green : UIColor.systemFill
+    }
+
+    @objc private func fuzzyTapped(_ c: UIButton) {
+        paint(c, on: !c.isSelected)
+        onFuzzy?(fuzzyChips.filter { $0.isSelected }.reduce(0) { $0 | $1.tag })
     }
 
     @objc private func learnChanged() { onLearn?(learn.isOn) }
@@ -930,6 +974,7 @@ final class KeyboardViewController: UIInputViewController {
     private let haptic = UIImpactFeedbackGenerator(style: .light)   // 按键轻震（要「允许完全访问」）
     private(set) var hapticOn = UserDefaults.standard.object(forKey: "haptic") as? Bool ?? true     // 设置面板里的「按键震动」开关
     private(set) var nine = UserDefaults.standard.object(forKey: "nine") as? Bool ?? false           // 中文用九键（false = 26 键）
+    private(set) var fuzzMask = UserDefaults.standard.integer(forKey: "fuzzy")                      // 打开的模糊音（位掩码，0 = 全关）
     private let settingsPanel = SettingsPanel()
     private var nineSyll: SyllableColumn?        // 九键左边的音节列表
     private var ninePunct: UIStackView?          // 九键左边平时的 ，。？
@@ -1039,6 +1084,7 @@ final class KeyboardViewController: UIInputViewController {
         let lm = bundle.path(forResource: "lm", ofType: "dat").flatMap { LMDict(path: $0) }      // 二元语言模型：整句选词看上文 + 联想预测
         let e = PinyinEngine(dict: d, lm: lm)
         if self.learnOn { e.user = Self.loadUser() }
+        e.fuzz = self.fuzzMask
         return e
     }()
 
@@ -1111,7 +1157,7 @@ final class KeyboardViewController: UIInputViewController {
         let e = engine
         engineQueue.sync { e?.user = on ? Self.loadUser() : nil }
         session = []
-        settingsPanel.sync(haptic: hapticOn, nine: nine, fullAccess: fullAccess, learn: learnOn, learned: learnedCount)
+        settingsPanel.sync(haptic: hapticOn, nine: nine, fullAccess: fullAccess, learn: learnOn, learned: learnedCount, fuzzy: fuzzMask)
     }
 
     private func clearLearned() {
@@ -1123,7 +1169,7 @@ final class KeyboardViewController: UIInputViewController {
             if on { e?.user = UserModel() }
         }
         session = []
-        settingsPanel.sync(haptic: hapticOn, nine: nine, fullAccess: fullAccess, learn: learnOn, learned: 0, cleared: true)
+        settingsPanel.sync(haptic: hapticOn, nine: nine, fullAccess: fullAccess, learn: learnOn, learned: 0, cleared: true, fuzzy: fuzzMask)
     }
     private var ctxTail = ""                 // 光标前已经打进输入框的最后一小段字（联想预测、按上文选词用）
     private var predictions: [String] = []   // 不拼字时的联想预测（接在上文最后一个词后面最可能的词 / 标点）
@@ -1174,6 +1220,7 @@ final class KeyboardViewController: UIInputViewController {
         settingsPanel.onHaptic = { [weak self] on in self?.setHaptic(on) }
         settingsPanel.onLayout = { [weak self] on in self?.setNine(on) }
         settingsPanel.onLearn = { [weak self] on in self?.setLearn(on) }
+        settingsPanel.onFuzzy = { [weak self] m in self?.setFuzzy(m) }
         settingsPanel.onClearLearn = { [weak self] in self?.clearLearned() }
         candBar.onHide = { [weak self] in self?.collapse() }
         applyMic()
@@ -1339,7 +1386,7 @@ final class KeyboardViewController: UIInputViewController {
     private func toggleSettings() {
         if !settingsPanel.isHidden { closeSettings(); return }
         closePanel()
-        settingsPanel.sync(haptic: hapticOn, nine: nine, fullAccess: hasFullAccess, learn: learnOn, learned: learnedCount)
+        settingsPanel.sync(haptic: hapticOn, nine: nine, fullAccess: hasFullAccess, learn: learnOn, learned: learnedCount, fuzzy: fuzzMask)
         settingsPanel.isHidden = false
     }
 
@@ -1349,6 +1396,14 @@ final class KeyboardViewController: UIInputViewController {
         hapticOn = on
         UserDefaults.standard.set(on, forKey: "haptic")
         if on { haptic.impactOccurred() }      // 打开时震一下，让人知道开了
+    }
+
+    /// 设置里改了模糊音：存下来、告诉引擎（引擎在后台线程算，改它也排在那个队列里）、正在拼的重新出候选
+    func setFuzzy(_ m: Int) {
+        fuzzMask = m
+        UserDefaults.standard.set(m, forKey: "fuzzy")
+        if let e = engine { onEngine { e.fuzz = m } }
+        if composing { updateCandidates() }
     }
 
     private func setNine(_ on: Bool) {

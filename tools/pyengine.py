@@ -339,6 +339,90 @@ def learn_text(user, lm, text, prev=None):
         user.learn(run, prev)
 
 
+# ---- 模糊音（二期，2026-10-25；设置里按「对」打开，默认全关）----
+# 用户说话带口音：z/zh c/ch s/sh、n/l、an/ang en/eng in/ing、f/h 分不清。打开的对，输入的音节按这些对「也可能是」另一个音节：
+# 词格里给每段拼音加「按模糊音换了一个或几个音节就成词」的边（带罚分，打对的不被抢）；整词候选里也把模糊音的词按（权重 - 罚分）并进去。
+# 做法和 typo_edges 一样：沿有序词典按前缀走，每个音节试「原样 + 模糊音变体」，不枚举所有变体再逐个查。变体必须是合法音节。
+FUZZ_ZCS, FUZZ_NL, FUZZ_NG, FUZZ_FH = 1, 2, 4, 8
+FUZZ = 0                           # 现在打开的模糊音（位掩码；Swift 版是 PinyinEngine.fuzz）
+PEN_FUZZ = int(1.2 * 2048)         # 每个换了的音节的罚分（1/2048 纳特，约差 3.3 倍词频）
+FUZZ_MAX = 20                      # 一段最多吃这么多个字母
+
+
+def _alt_zcs(t):
+    if t[:2] in ("zh", "ch", "sh"):
+        return t[0] + t[2:]
+    if t[0] in "zcs" and (len(t) < 2 or t[1] != "h"):
+        return t[0] + "h" + t[1:]
+    return None
+
+
+def _alt_nl(t):
+    if t[0] == "n":
+        return "l" + t[1:]
+    if t[0] == "l":
+        return "n" + t[1:]
+    return None
+
+
+def _alt_ng(t):
+    if t[-3:] in ("ang", "eng", "ing"):
+        return t[:-1]
+    if t[-2:] in ("an", "en", "in"):
+        return t + "g"
+    return None
+
+
+def _alt_fh(t):
+    if t[0] == "f":
+        return "h" + t[1:]
+    if t[0] == "h":
+        return "f" + t[1:]
+    return None
+
+
+def syl_variants(t, mask):
+    """音节 t 按打开的模糊音能变成的别的音节（都在音节表里），顺序固定，不含 t 自己"""
+    out = [t]
+    for bit, f in ((FUZZ_ZCS, _alt_zcs), (FUZZ_NL, _alt_nl), (FUZZ_NG, _alt_ng), (FUZZ_FH, _alt_fh)):
+        if mask & bit:
+            for x in list(out):
+                v = f(x)
+                if v is not None and v in SYL and v not in out:
+                    out.append(v)
+    return out[1:]
+
+
+def fuzz_edges(D, b, i, end, mask):
+    """从 b[i] 起（不越过 end）按模糊音换了至少一个音节就能成词典键的段：按（吃掉几个字母, 词典键）排好的 [(吃掉几个字母, 词典键, 罚分)]；
+    输入原样的键不收（那是普通的边）；同一段同一个键有几种切法 / 换法的取罚分最小的"""
+    out = {}
+
+    def walk(x, lo, hi, depth, changed):
+        # 输入已经走到 b[x]；词典键前缀（长 depth）= D.keys[lo][:depth]，[lo, hi) 里的键都以它开头
+        if changed and x > i and len(D.keys[lo]) == depth and D.keys[lo] != b[i:x]:
+            k = (x - i, D.keys[lo])
+            pen = changed * PEN_FUZZ
+            if k not in out or pen < out[k]:
+                out[k] = pen
+        if x >= end or x - i >= FUZZ_MAX:
+            return
+        prefix = D.keys[lo][:depth]
+        for l in range(1, 7):
+            if x + l > end:
+                break
+            t = b[x:x + l].decode()
+            if t not in SYL:
+                continue
+            for v, ch in [(t, 0)] + [(v, 1) for v in syl_variants(t, mask)]:
+                a, z = _narrow(D, lo, hi, prefix + v.encode())
+                if a < z:
+                    walk(x + l, a, z, depth + len(v), changed + ch)
+
+    walk(i, 0, D.n, 0, 0)
+    return sorted((p, k, pen) for (p, k), pen in out.items())
+
+
 # ---- 整句纠错：词格里给每段拼音加「改一处就成词」的边（2026-10-24）----
 # 一处 = 邻键替换 / 多打一个字母 / 漏打一个字母（段尾只认漏打 g、h：an→ang、z→zh）/ 相邻两个字母对调；段长 2~14 个字母。
 # 这样整句里夹一个错键也能连成句（原来纠错只看整个输入串，长句里错一个键就整句认不出）。带罚分交给语言模型挑：
@@ -461,6 +545,9 @@ def run_dp(D, b, cuts, lm, ctx, user=None, ctxw=None, t9=False):
                     extend(i, j, [D.n + x for x in ph], 0)
         for p, k, pen in typo_edges(D, b, i, lim):
             extend(i, i + p, list(D.exact(k))[:PER_KEY], pen)
+        if FUZZ:
+            for p, k, pen in fuzz_edges(D, b, i, lim, FUZZ):
+                extend(i, i + p, list(D.exact(k))[:PER_KEY], pen)
     beams[n] = prune(beams[n])
     return beams
 
@@ -798,16 +885,25 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
         return "".join(ws), fixed(path, j), ws
 
     full = [e for e in list(D.exact(b))[:60] if entry_ok(D, e, b, 0, n, cuts)]
+    fpen = {}
+    if FUZZ and not cuts:       # 模糊音：整串按模糊音换了音节就成词的，按（权重 - 罚分）并进整词里（打对的同权重排前面）
+        for p, k, pen in fuzz_edges(D, b, 0, n, FUZZ):
+            if p == n:
+                for e in list(D.exact(k))[:60]:
+                    fpen[e] = pen
+        if fpen:
+            sc = [(-D.entry_raw(e)[1], 0, k, e) for k, e in enumerate(full)] + [(-D.entry_raw(e)[1] + pen, 1, e, e) for e, pen in sorted(fpen.items())]
+            full = [x[3] for x in sorted(sc)]
     if lm and ctx_id >= 0 and len(full) > 1:      # 有上文：整词按「接在上文后面」的代价重排（代价相同保持原顺序）
         def cx(e):
             w, q = D.entry_raw(e)
-            return step_cost(lm, ctx_id, lm.id(w), UNI_BASE - q)
+            return step_cost(lm, ctx_id, lm.id(w), UNI_BASE - q) + fpen.get(e, 0)
         full = [e for _, _, e in sorted((cx(e), k, e) for k, e in enumerate(full))]
     if user and full and any(user.bonus(ctx, D.entry(e)[0]) for e in full):     # 用过的词往前挪（打折后的代价相同保持原顺序）
         def ucost(e):
             w, q = D.entry_raw(e)
             base = step_cost(lm, ctx_id, lm.id(w), UNI_BASE - q) if lm and ctx_id >= 0 else UNI_BASE - q
-            return base - user.bonus(ctx, w)
+            return base - user.bonus(ctx, w) + fpen.get(e, 0)
         full = [e for _, _, e in sorted((ucost(e), k, e) for k, e in enumerate(full))]
     # 自造词：键正好是整个输入串的，排在最前面（用得多的在前）
     mine = [] if cuts or not user else [pl[x][1] for x in sorted(user.phrases(b), key=lambda x: (-user.p[pl[x]][0], x))]
@@ -909,6 +1005,9 @@ if __name__ == "__main__":
     user = None
     if args and args[0].startswith("--user="):      # 个人学习：--user=文件（格式见 User.dump）
         user = User.load(args[0][7:])
+        args = args[1:]
+    if args and args[0].startswith("--fuzzy="):      # 模糊音：--fuzzy=位掩码（1 z/zh c/ch s/sh，2 n/l，4 an/ang en/eng in/ing，8 f/h）
+        FUZZ = int(args[0][8:])
         args = args[1:]
     for s in args:
         ctx, _, rest = s.rpartition("@") if "@" in s else ("", "", s)

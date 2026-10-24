@@ -30,6 +30,14 @@ jobs:
           /tmp/enginetest Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat --user=tools/user_test.txt "${UCASES[@]}" > /tmp/swift_u.txt
           python3 tools/pyengine.py Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat --user=tools/user_test.txt "${UCASES[@]}" > /tmp/py_u.txt
           diff /tmp/swift_u.txt /tmp/py_u.txt && echo "PARITY (USER) OK"
+          # 模糊音：两个掩码各对一遍（15 = 全开；5 = 只开 z/zh 系和 an/ang 系）
+          FCASES=()
+          while IFS= read -r l; do FCASES+=("$l"); done < tools/engine_cases_fuzzy.txt
+          for M in 15 5; do
+            /tmp/enginetest Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat --fuzzy=$M "${FCASES[@]}" > /tmp/swift_f$M.txt
+            python3 tools/pyengine.py Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat --fuzzy=$M "${FCASES[@]}" > /tmp/py_f$M.txt
+            diff /tmp/swift_f$M.txt /tmp/py_f$M.txt && echo "PARITY (FUZZY $M) OK"
+          done
 
       # 速度：每句一个字母一个字母地打，量每次出候选多久（Release 编译；CI 的 Mac 和近几年的 iPhone 单核差不多）
       - name: Pinyin engine speed
@@ -42,6 +50,7 @@ jobs:
         run: |
           python3 tools/bench/bench.py --check
           python3 tools/bench/learn.py tools/bench/data/chat.tsv --seed=2
+          python3 tools/bench/fuzzy.py --check
 
       # 键盘冒烟测试：在 iOS 模拟器里把键盘真的加载一遍、点几个键（约束放错之类的运行时崩溃只有这样才查得出来）
       - name: Keyboard smoke test (simulator)
