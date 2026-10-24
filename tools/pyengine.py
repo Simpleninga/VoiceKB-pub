@@ -69,8 +69,16 @@ class LM:
     def __init__(self, path):
         d = open(path, "rb").read()
         magic, V, P, ow, ob, obk, orng, obs, oc = struct.unpack_from("<4sIIIIIIII", d, 0)
-        assert magic == b"LMD1"
+        assert magic in (b"LMD1", b"LMD2")
         self.V, self.P = V, P
+        self.has_tri = magic == b"LMD2"
+        if self.has_tri:      # 三元：上下文（二元表下标）、区间、回退、后继词、代价
+            T, C, octx, otr, otb, otw, otc = struct.unpack_from("<IIIIIII", d, 36)
+            self.ctx = struct.unpack_from("<%dI" % C, d, octx)
+            self.tr = struct.unpack_from("<%dI" % (C + 1), d, otr)
+            self.tb = struct.unpack_from("<%dH" % C, d, otb)
+            self.tw = struct.unpack_from("<%dI" % T, d, otw)
+            self.tc = struct.unpack_from("<%dH" % T, d, otc)
         woff = struct.unpack_from("<%dI" % (V + 1), d, ow)
         self.words = [d[ob + woff[i]: ob + woff[i + 1]].decode("utf8") for i in range(V)]
         self.keys = [w.encode("utf8") for w in self.words]
@@ -90,6 +98,20 @@ class LM:
         lo, hi = self.range[a], self.range[a + 1]
         i = bisect.bisect_left(self.bs, b, lo, hi)
         return self.costs[i] if i < hi and self.bs[i] == b else None
+
+    def tri_ctx(self, a, b):
+        """词对 (a, b) 有没有三元上下文：有就返回它在上下文表里的下标"""
+        lo, hi = self.range[a], self.range[a + 1]
+        i = bisect.bisect_left(self.bs, b, lo, hi)
+        if i >= hi or self.bs[i] != b:
+            return None
+        j = bisect.bisect_left(self.ctx, i)
+        return j if j < len(self.ctx) and self.ctx[j] == i else None
+
+    def tri_cost(self, ci, w):
+        lo, hi = self.tr[ci], self.tr[ci + 1]
+        i = bisect.bisect_left(self.tw, w, lo, hi)
+        return self.tc[i] if i < hi and self.tw[i] == w else None
 
     def followers(self, a, limit):
         """a 后面最可能接的词（代价小的在前），不含 <unk> / <s>"""
@@ -216,6 +238,22 @@ def step_cost(lm, last, lid, uni):
         if c is not None:
             return c
     return uni + lm.back[last]      # 没见过的词对（含不在模型里的词）：一元代价 + 回退代价，不能让「模型里没有的词」白占便宜
+
+
+def step_cost3(lm, p2, last, lid, uni):
+    """三元：前前词 p2、上一个词 last 后面接词 lid 的代价。见过的三元 = 它自己的代价；上下文 (p2, last) 见过、这个词没见过 = 二元代价 + 三元回退代价；
+    上下文也没见过（或没有三元）= 二元代价。p2 < 0 = 没有前前词"""
+    base = step_cost(lm, last, lid, uni)
+    if lm is None or not lm.has_tri or p2 < 0 or last < 0:
+        return base
+    ci = lm.tri_ctx(p2, last)
+    if ci is None:
+        return base
+    if lid >= 0:
+        c3 = lm.tri_cost(ci, lid)
+        if c3 is not None:
+            return c3
+    return base + lm.tb[ci]
 
 
 # ---- 个人学习（2026-10-24）----
@@ -505,7 +543,7 @@ def run_dp(D, b, cuts, lm, ctx, user=None, ctxw=None, t9=False):
     t9 = 九键：b 里是数字（一个键上的任意字母）/ 已选定的字母，每段按 t9_edges 取词；不纠错、不用个人学习的自造词"""
     n = len(b)
     beams = [[] for _ in range(n + 1)]
-    beams[0] = [(0, ctx, (), 0)]
+    beams[0] = [(0, ctx, (), 0, -1)]
     pl = user.plist() if user else []
 
     def ent(e):
@@ -518,11 +556,11 @@ def run_dp(D, b, cuts, lm, ctx, user=None, ctxw=None, t9=False):
             uni = UNI_BASE - q
             lid = lm.id(w) if lm else -1
             key = lid if lid >= 0 else -(e + 1)
-            for c, last, path, f in beams[i]:
-                st = step_cost(lm, last, lid, uni)
+            for c, last, path, f, p2 in beams[i]:
+                st = step_cost3(lm, p2, last, lid, uni)
                 if user:
                     st = max(0, st - user.bonus(ent(path[-1][0])[0] if path else ctxw, w))
-                beams[j].append((c + st + pen, key, path + ((e, j - i),), f | fix))
+                beams[j].append((c + st + pen, key, path + ((e, j - i),), f | fix, last))
 
     for i in range(n):
         if i > 0:

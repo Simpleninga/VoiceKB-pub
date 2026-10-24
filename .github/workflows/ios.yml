@@ -44,6 +44,8 @@ jobs:
         run: |
           /tmp/enginetest Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat --bench tools/bench/data/chat.tsv tools/bench/data/chat_typo.tsv
           /tmp/enginetest Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat --user=tools/user_test.txt --bench tools/bench/data/chat.tsv tools/bench/data/chat_typo.tsv
+          echo "模糊音全开："
+          /tmp/enginetest Keyboard/Resources/pinyin.dat Keyboard/Resources/lm.dat --fuzzy=15 --bench tools/bench/data/chat.tsv tools/bench/data/chat_typo.tsv
 
       # 跑分：整句首选低于 tools/bench/baseline.json 就判失败（改引擎 / 词库 / 模型不许退步）；个人学习的留出测试只打印
       - name: Pinyin engine bench

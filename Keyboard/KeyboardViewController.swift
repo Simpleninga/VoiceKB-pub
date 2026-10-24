@@ -1676,7 +1676,7 @@ final class KeyboardViewController: UIInputViewController {
         keyFeedback()
         punctLong = false
         punctTimer?.invalidate()
-        punctTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+        punctTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.punctLong = true
             self.typePunct(self.chinese ? "。" : ".")
