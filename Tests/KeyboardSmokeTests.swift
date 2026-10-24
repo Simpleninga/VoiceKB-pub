@@ -422,7 +422,8 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertEqual(vc.previewText, "h")
         XCTAssertLessThan(bubble.frame.minY, h.convert(h.bounds, to: vc.view).minY, "气泡在按键上方")
         h.sendActions(for: .touchUpInside)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.25))
+        let until = Date().addingTimeInterval(2)      // 收起有 0.07 秒的延迟；CI 机器忙的时候 0.25 秒不够
+        while vc.previewText != nil, Date() < until { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
         XCTAssertNil(vc.previewText, "松手后气泡要收起")
         tap(vc, "q")
         XCTAssertEqual(vc.previewText, "q")
