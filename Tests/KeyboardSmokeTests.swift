@@ -1330,6 +1330,6 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertEqual(r.stats.edge, 1, "屏幕最左边")
         r.fingerUp(2, at: CGPoint(x: 3, y: qf.midY), time: 0.1, cancelled: false)
         XCTAssertEqual(r.stats.miss, 0)
-        XCTAssertTrue(r.stats.summary.contains("落在缝里1"))
+        XCTAssertTrue(r.stats.summary.contains("屏幕边缘1"), r.stats.summary)
     }
 }
