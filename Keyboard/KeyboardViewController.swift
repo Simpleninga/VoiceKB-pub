@@ -67,9 +67,13 @@ struct TouchStats {
     var cancelled = 0    // 被系统取消（而且不是短促的点按）
     var saved = 0        // 系统取消了，但是一下短促的点按，照样打了
     var far = 0          // 手指拖出键盘很远松手，取消
+    var gap = 0          // 手指落在键与键之间的缝里（归最近的键，没丢）
+    var edge = 0         // 手指落在离屏幕左右边缘 14pt 以内
+    var late = 0         // 触摸比手指实际按下晚了 80 毫秒以上才送到键盘（键盘主线程忙 / 系统延后送触摸）：「按了没反应」其实是慢了
+    var lateMax = 0      // 最晚的那一次，毫秒
 
     var summary: String {
-        "按下\(down) 没按到键\(miss) 滑过去改\(slid) 上滑\(swiped) 空格删除滑动\(dragged) 系统取消\(cancelled) 取消后补打\(saved) 拖远取消\(far)"
+        "按下\(down) 没按到键\(miss) 滑过去改\(slid) 上滑\(swiped) 空格删除滑动\(dragged) 系统取消\(cancelled) 取消后补打\(saved) 拖远取消\(far) 落在缝里\(gap) 屏幕边缘\(edge) 触摸迟到\(late) 最晚\(lateMax)毫秒"
     }
 }
 
@@ -199,7 +203,14 @@ final class KeyboardRoot: UIView {
 
     func fingerDown(_ id: AnyHashable, at p: CGPoint, time: TimeInterval) {
         stats.down += 1
+        if time > 100 {      // 触摸的时间戳和 systemUptime 同一个钟（开机后的秒数）；测试里传的假时间不算
+            let ms = Int((ProcessInfo.processInfo.systemUptime - time) * 1000)
+            if ms > 80 { stats.late += 1 }
+            stats.lateMax = max(stats.lateMax, ms)
+        }
+        if p.x < 14 || p.x > bounds.width - 14 { stats.edge += 1 }
         guard let best = nearest(to: p), best.score > -30 else { stats.miss += 1; return }
+        if best.score < 0 { stats.gap += 1 }
         fingers[id] = Finger(key: best.key, start: p, t0: time)
         let k = best.key
         k.touchHeld = true
@@ -388,11 +399,39 @@ final class WaveView: UIView {
     }
 }
 
-/// 候选横滑区（仿豆包 CandidateListView 那套触摸规则）：
-/// ① 在候选字上按下也能直接拖：滑动一开始就取消按钮的点按，不用等、也不丢；
-/// ② 点在两个候选之间 2pt 的缝里、还有行两头的留空里不会落空：算点到附近那个候选（感知交给 CandidateBar 的 tap 手势）。
-final class CandidateScroll: UIScrollView {
-    /// 从候选字上起手也照滑不误
+/// 只沿一个方向滑的列表（候选横滑条、九键音节列表、展开的候选面板），仿豆包（Android RecyclerView）的拖动规则：
+/// ① 在按钮上按下也能直接拖：滑动一开始就取消按钮的点按，不用等、也不丢；
+/// ② 只看沿滑动方向动了多远，另一个方向随便偏：手指斜着滑也照样滑。
+///    UIScrollView 默认「这个方向滑不动就不接」——横滑条上手指走势偏竖（单手拇指画弧基本都偏竖）整个手势直接被拒，按钮收到的是一次拖出去的点按，
+///    表现就是「斜着滑没反应」甚至误选一个候选。把另一个方向声明成「可以弹」，手势就接下来，再把那个方向的偏移钉死在 0。
+class AxisScrollView: UIScrollView {
+    /// 沿哪个方向滑；另一个方向锁死
+    var along: NSLayoutConstraint.Axis = .horizontal { didSet { applyAxis() } }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        applyAxis()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) 不用") }
+
+    private func applyAxis() {
+        alwaysBounceVertical = along == .horizontal
+        alwaysBounceHorizontal = along == .vertical
+    }
+
+    private func locked(_ o: CGPoint) -> CGPoint { along == .horizontal ? CGPoint(x: o.x, y: 0) : CGPoint(x: 0, y: o.y) }
+
+    override var contentOffset: CGPoint {
+        get { super.contentOffset }
+        set { super.contentOffset = locked(newValue) }
+    }
+
+    override func setContentOffset(_ contentOffset: CGPoint, animated: Bool) {
+        super.setContentOffset(locked(contentOffset), animated: animated)
+    }
+
+    /// 从按钮上起手也照滑不误
     override func touchesShouldCancel(in view: UIView) -> Bool { true }
 }
 
@@ -413,18 +452,25 @@ extension CandidateBar {
 /// 打字时麦克风和收起箭头让位，候选能用满整条。
 final class CandidateBar: UIView {
     static let height: CGFloat = 58
+    /// 下面一行候选字的高度（上面是拼音行）
+    static let candidateRowH: CGFloat = 32
     /// 顶栏三个圆形按钮（麦克风、齿轮、收起）的直径；能按的范围再往外多 8（hitOutset），整个圆连同圆外一圈都算按到（仿豆包）
     static let circle: CGFloat = 40
+    /// 打字时最右边「展开箭头」那一整列的宽：豆包的 DividerArrowEndingView 是整条候选行高 × 44dp 的一整块都能点，不是只有 20dp 的小箭头。
+    /// 我们以前只有 36×26 的小块还在拼音行里，候选行那一侧点不到
+    static let endingWidth: CGFloat = 46
     private let statusLabel = UILabel()
     private let wave = WaveView()
     private let compLabel = UILabel()
     private let expand = PadButton(type: .custom)
-    private let scroll = CandidateScroll()
+    private let scroll = AxisScrollView()
     private let stack = UIStackView()
     private let undo = PadButton(type: .custom)
     private let hide = KeyButton(type: .custom)         // 不打字时最右边的白色圆形按钮（向下箭头）：收起键盘
     private let gear = KeyButton(type: .custom)         // 它左边的白色圆形按钮（齿轮）：键盘设置（按键震动、26键 / 九键）
     private var compLeading: NSLayoutConstraint!        // 拼音行的左边：平时 10，联想预测时让出左边的麦克风
+    private var scrollTrailing: NSLayoutConstraint!     // 候选横滑区的右边：右端有展开箭头 / ✕ 那一列时停在它左边，否则到顶栏边
+    private let endingDivider = UIView()                // 展开箭头那一列左边的细竖线（豆包同款）
     let mic = KeyButton(type: .custom)
     private var pool: [UIButton] = []          // 候选按钮：建一次反复用，打每个字母都重建几十个按钮会卡
     var onPick: ((Int) -> Void)?
@@ -448,8 +494,11 @@ final class CandidateBar: UIView {
         compLabel.accessibilityIdentifier = "comp"
         expand.tintColor = .label
         expand.accessibilityIdentifier = "expand"
-        expand.pad = UIEdgeInsets(top: 4, left: 14, bottom: 8, right: 8)      // 展开箭头原来只有 36×26，手指一偏就按不到
+        expand.contentEdgeInsets = UIEdgeInsets(top: Self.height - Self.candidateRowH, left: 0, bottom: 0, right: 0)      // 整列都能点，小箭头画在候选行的正中
         expand.addTarget(self, action: #selector(expandTapped), for: .touchUpInside)
+        endingDivider.backgroundColor = .separator
+        endingDivider.isUserInteractionEnabled = false
+        expand.addSubview(endingDivider)
         scroll.delaysContentTouches = false          // 候选字按下去立刻有反应，不等 0.15 秒
         scroll.contentInsetAdjustmentBehavior = .never   // 键盘里没有安全区可让，别给横滑起点掺水分
         let gapTap = UITapGestureRecognizer(target: self, action: #selector(gapTapped(_:)))
@@ -484,7 +533,7 @@ final class CandidateBar: UIView {
         xmark.layer.cornerRadius = 13
         xmark.accessibilityIdentifier = "xmark"
         xmark.accessibilityLabel = "关掉联想"
-        xmark.pad = UIEdgeInsets(top: 10, left: 12, bottom: 10, right: 10)
+        xmark.pad = UIEdgeInsets(top: 16, left: 8, bottom: 16, right: 12)      // 往右一直到屏幕边、往左到候选条停下的地方（Self.endingWidth）
         xmark.addTarget(self, action: #selector(xmarkTapped), for: .touchUpInside)
         xmark.isHidden = true
         wave.isHidden = true
@@ -493,7 +542,9 @@ final class CandidateBar: UIView {
             addSubview(v)
         }
         stack.translatesAutoresizingMaskIntoConstraints = false
+        endingDivider.translatesAutoresizingMaskIntoConstraints = false
         compLeading = compLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10)
+        scrollTrailing = scroll.trailingAnchor.constraint(equalTo: trailingAnchor)
         NSLayoutConstraint.activate([
             mic.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             mic.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -526,13 +577,17 @@ final class CandidateBar: UIView {
             compLabel.topAnchor.constraint(equalTo: topAnchor, constant: 3),
             compLabel.heightAnchor.constraint(equalToConstant: 22),
             compLabel.trailingAnchor.constraint(lessThanOrEqualTo: expand.leadingAnchor, constant: -6),
-            expand.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            expand.centerYAnchor.constraint(equalTo: compLabel.centerYAnchor),
-            expand.widthAnchor.constraint(equalToConstant: 36),
-            expand.heightAnchor.constraint(equalToConstant: 26),
-            // 下一行：候选字（麦克风让位，用满整条）
+            expand.trailingAnchor.constraint(equalTo: trailingAnchor),
+            expand.topAnchor.constraint(equalTo: topAnchor),
+            expand.bottomAnchor.constraint(equalTo: bottomAnchor),
+            expand.widthAnchor.constraint(equalToConstant: Self.endingWidth),
+            endingDivider.leadingAnchor.constraint(equalTo: expand.leadingAnchor),
+            endingDivider.widthAnchor.constraint(equalToConstant: 1),
+            endingDivider.heightAnchor.constraint(equalToConstant: 20),
+            endingDivider.centerYAnchor.constraint(equalTo: expand.topAnchor, constant: Self.height - Self.candidateRowH / 2),
+            // 下一行：候选字（麦克风让位；右边停在展开箭头那一列的左边）
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scrollTrailing,
             scroll.topAnchor.constraint(equalTo: compLabel.bottomAnchor, constant: 1),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
@@ -568,9 +623,15 @@ final class CandidateBar: UIView {
         hide.isHidden = !on
         gear.isHidden = !on
         compLabel.isHidden = on
-        expand.isHidden = on
+        setEnding(!on)
         scroll.isHidden = on
         xmark.isHidden = true      // ✕ 只在联想预测那一行出现
+    }
+
+    /// 最右边那一列（打字时是展开箭头，联想预测时是 ✕）要不要占位：占位时候选横滑条停在它左边，不会滑到它底下被它截走点按
+    private func setEnding(_ on: Bool) {
+        expand.isHidden = !on
+        scrollTrailing.constant = on ? -Self.endingWidth : 0
     }
 
     func showStatus(_ text: String, _ color: UIColor) {
@@ -613,7 +674,7 @@ final class CandidateBar: UIView {
         wave.isHidden = true
         idleLayout(false)
         undo.isHidden = true
-        compLeading.constant = 10
+        if compLeading.constant != 10 { compLeading.constant = 10 }
         setInsets(left: 0, right: 0)
         fill(comp: comp, items: items, first: true)
     }
@@ -630,13 +691,16 @@ final class CandidateBar: UIView {
         compLabel.isHidden = false
         scroll.isHidden = false
         expand.isHidden = true
-        compLeading.constant = 58
-        setInsets(left: 56, right: 52)      // 右边留 ✕ 的位置
+        scrollTrailing.constant = -Self.endingWidth      // 右边留 ✕ 的位置
+        if compLeading.constant != 58 { compLeading.constant = 58 }
+        setInsets(left: 56, right: 0)
         fill(comp: ctx + " …", items: items, first: false)
     }
 
     /// 候选横滑区两头留空（避开麦克风和收起箭头），并让第一个候选从左边留空之后开始排
     private func setInsets(left: CGFloat, right: CGFloat) {
+        // 没变就别碰：每次重设 contentInset 都可能让正在惯性滑动的列表被打断（顶栏每 0.5 秒轮询一次刷新，联想行正滑着就被叫停）
+        guard scroll.contentInset.left != left || scroll.contentInset.right != right else { return }
         scroll.contentInset.left = left
         scroll.contentInset.right = right
     }
@@ -672,7 +736,8 @@ final class CandidateBar: UIView {
             let minO = -scroll.contentInset.left
             let maxO = max(minO, scroll.contentSize.width - scroll.bounds.width)
             let x = min(max(scroll.contentOffset.x, minO), maxO)
-            scroll.setContentOffset(CGPoint(x: x, y: 0), animated: false)
+            // 位置本来就在合法范围里就别动：setContentOffset 哪怕设成同一个值，也会叫停正在惯性滑动的列表（后台候选晚到，刚好撞上用户在滑）
+            if x != scroll.contentOffset.x { scroll.setContentOffset(CGPoint(x: x, y: 0), animated: false) }
         } else {
             scroll.setContentOffset(CGPoint(x: -scroll.contentInset.left, y: 0), animated: false)
         }
@@ -714,7 +779,7 @@ extension CandidateBar: UIGestureRecognizerDelegate {
 }
 
 /// 九键左边的音节列表：打字时列出「下一个音节」可能是哪几个（ni / mi / o…），点一个就选定；可上下滑
-final class SyllableColumn: UIScrollView, UIScrollViewDelegate {
+final class SyllableColumn: AxisScrollView, UIScrollViewDelegate {
     var onPick: ((Int) -> Void)?
     private var pool: [KeyButton] = []
     private var count = 0
@@ -726,6 +791,7 @@ final class SyllableColumn: UIScrollView, UIScrollViewDelegate {
         self.gap = gap
         self.maker = maker
         super.init(frame: .zero)
+        along = .vertical
         showsVerticalScrollIndicator = false
         delaysContentTouches = false          // 按下去立刻有反应，不等 0.15 秒
         accessibilityIdentifier = "syllables"
@@ -760,8 +826,6 @@ final class SyllableColumn: UIScrollView, UIScrollViewDelegate {
 
     /// 列表正被手指跟踪时的「归零」先记着，等滚动停下来再补
     private var pendingZero = false
-
-    override func touchesShouldCancel(in view: UIView) -> Bool { true }      // 在音节字上按下也能直接滑
 
     func scrollViewDidEndDecelerating(_ sv: UIScrollView) { settleIfIdle() }
     func scrollViewDidEndDragging(_ sv: UIScrollView, willDecelerate: Bool) { if !willDecelerate { settleIfIdle() } }
@@ -922,13 +986,15 @@ final class SettingsPanel: UIView {
 }
 
 /// 点候选栏的向下箭头展开：所有候选铺满键盘区（盖住按键），可上下滑，点一个就选它
-final class CandidatePanel: UIScrollView {
+final class CandidatePanel: AxisScrollView {
     var onPick: ((Int) -> Void)?
     private var pool: [KeyButton] = []
     private var items: [String] = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        along = .vertical
+        delaysContentTouches = false          // 按下去立刻有反应，不等 0.15 秒（以前没设：手指按在候选字上就滑不动，要在 0.15 秒内动起来才行）
         backgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.13, alpha: 1) : UIColor(white: 0.93, alpha: 1) }
         showsVerticalScrollIndicator = false
         accessibilityIdentifier = "panel"
