@@ -79,7 +79,7 @@ final class KeyboardSmokeTests: XCTestCase {
         let ks = keys(vc)
         XCTAssertGreaterThanOrEqual(ks.count, 30, "字母 26 + 功能键")
         for k in ks {
-            let f = k.convert(k.bounds, to: vc.view)
+            let f = k.convert(k.faceBounds, to: vc.view)      // 键面（看得见的那块）；格子比它大一圈，左右伸出屏幕半条缝
             XCTAssertGreaterThan(f.width, 10, "\(k.currentTitle ?? "?") 太窄")
             XCTAssertGreaterThan(f.height, 20, "\(k.currentTitle ?? "?") 太矮")
             XCTAssertLessThanOrEqual(f.maxX, 390.5)
@@ -94,17 +94,23 @@ final class KeyboardSmokeTests: XCTestCase {
               let m = keys(vc).first(where: { $0.currentTitle == "m" }), let space = keys(vc).first(where: { $0.accessibilityIdentifier == "space" }) else {
             return XCTFail("找不到 q / a / m / 空格")
         }
-        for k in [q, a, m] { XCTAssertGreaterThanOrEqual(k.bounds.height, 46.5, "字母键要够高：\(k.bounds)") }
-        XCTAssertLessThanOrEqual(q.bounds.height, 52, "太高显得窄、更不好按（用户 10-23 反馈）：\(q.bounds)")
-        XCTAssertLessThanOrEqual(space.bounds.height, 44, "底排要矮：\(space.bounds)")
-        XCTAssertGreaterThan(q.bounds.height, space.bounds.height + 3)
-        XCTAssertGreaterThanOrEqual(q.bounds.width, 33, "字母键要宽：\(q.bounds)")
-        XCTAssertGreaterThan(q.bounds.width / q.bounds.height, 0.7, "不能又高又窄：\(q.bounds)")
-        let qf = q.convert(q.bounds, to: vc.view), af = a.convert(a.bounds, to: vc.view)
+        // 看键面（看得见的那块）。格子比键面大一圈、紧挨着铺满没有缝（仿豆包），所以缝宽 = 两个键面之间的距离
+        for k in [q, a, m] { XCTAssertGreaterThanOrEqual(k.faceBounds.height, 46.5, "字母键要够高：\(k.faceBounds)") }
+        XCTAssertLessThanOrEqual(q.faceBounds.height, 52, "太高显得窄、更不好按（用户 10-23 反馈）：\(q.faceBounds)")
+        XCTAssertLessThanOrEqual(space.faceBounds.height, 44, "底排要矮：\(space.faceBounds)")
+        XCTAssertGreaterThan(q.faceBounds.height, space.faceBounds.height + 3)
+        XCTAssertGreaterThanOrEqual(q.faceBounds.width, 33, "字母键要宽：\(q.faceBounds)")
+        XCTAssertGreaterThan(q.faceBounds.width / q.faceBounds.height, 0.7, "不能又高又窄：\(q.faceBounds)")
+        let qf = q.convert(q.faceBounds, to: vc.view), af = a.convert(a.faceBounds, to: vc.view)
         XCTAssertGreaterThanOrEqual(af.minY - qf.maxY, 8, "排与排之间的缝要宽些（用户 10-25 嫌太窄、容易误触）")
         XCTAssertLessThanOrEqual(af.minY - qf.maxY, 11)
         guard let w = keys(vc).first(where: { $0.currentTitle == "w" }) else { return XCTFail("找不到 w") }
-        XCTAssertGreaterThanOrEqual(w.convert(w.bounds, to: vc.view).minX - qf.maxX, 4.5, "同一排键之间的缝要宽些")
+        XCTAssertGreaterThanOrEqual(w.convert(w.faceBounds, to: vc.view).minX - qf.maxX, 4.5, "同一排键之间的缝要宽些")
+        // 真正的缝是 0：相邻两个键的格子紧挨着，点在看得见的缝里就是点在某个键的格子里
+        let qc = q.convert(q.bounds, to: vc.view), wc = w.convert(w.bounds, to: vc.view)
+        XCTAssertEqual(wc.minX - qc.maxX, 0, accuracy: 0.5, "同一排相邻两格紧挨")
+        let ac = a.convert(a.bounds, to: vc.view)
+        XCTAssertEqual(ac.minY - qc.maxY, 0, accuracy: 0.5, "上下两排的格子紧挨")
     }
 
     /// 拼音打错了也要联想到：zhidoa（o a 写反）→ 知道；nihoa → 你好；womne → 我们
@@ -531,8 +537,8 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertNotEqual(g.en.textColor, Brand.green)
         XCTAssertLessThan(g.zh.frame.minY, g.en.frame.minY, "中在上、英在下")
         XCTAssertLessThan(g.zh.frame.minX, g.en.frame.minX, "中在左、英在右")
-        let w = modeKey(vc)?.bounds.width ?? 999
-        let unit = keys(vc).first(where: { $0.currentTitle == "q" })?.bounds.width ?? 0
+        let w = modeKey(vc)?.faceBounds.width ?? 999
+        let unit = keys(vc).first(where: { $0.currentTitle == "q" })?.faceBounds.width ?? 0
         XCTAssertLessThan(w, unit * 1.4, "中英键不能比字母键宽出太多：\(w) vs \(unit)")
         modeKey(vc)?.sendActions(for: .touchDown)
         vc.view.layoutIfNeeded()
@@ -856,15 +862,18 @@ final class KeyboardSmokeTests: XCTestCase {
     }
 
 
-    /// 123 旁边的「，。」合并键（仿豆包）：逗号大字 + 右上角句号小字；点 = 逗号、上滑 = 句号；英文下是 , .
-    func testPunctKeyNextTo123() {
+    /// 空格右边的「，。」合并键（用户 10-26 要求；仿豆包）：逗号大字 + 右上角句号小字；点 = 逗号、上滑 = 句号；英文下是 , .
+    func testPunctKeyRightOfSpace() {
         let vc = makeKeyboard()
         guard let k123 = keys(vc).first(where: { $0.currentTitle == "123" }), let pk = keys(vc).first(where: { $0.accessibilityIdentifier == "punct" }),
-              let mode = modeKey(vc) else { return XCTFail("找不到 123 / 「，。」键 / 中英键") }
-        let a = k123.convert(k123.bounds, to: vc.view), b = pk.convert(pk.bounds, to: vc.view), m = mode.convert(mode.bounds, to: vc.view)
-        XCTAssertGreaterThanOrEqual(b.minX, a.maxX, "「，。」紧挨在 123 右边")
-        XCTAssertLessThan(b.maxX, m.minX, "在中英键左边")
-        XCTAssertEqual(abs(a.minY - b.minY) < 1, true, "和 123 同一排")
+              let space = keys(vc).first(where: { $0.accessibilityIdentifier == "space" }), let ret = keys(vc).first(where: { $0.accessibilityIdentifier == "return" }) else {
+            return XCTFail("找不到 123 / 「，。」键 / 空格 / 回车")
+        }
+        let a = k123.convert(k123.bounds, to: vc.view), b = pk.convert(pk.bounds, to: vc.view), sp = space.convert(space.bounds, to: vc.view), r = ret.convert(ret.bounds, to: vc.view)
+        XCTAssertGreaterThanOrEqual(b.minX, sp.maxX - 0.5, "「，。」紧挨在空格右边")
+        XCTAssertLessThanOrEqual(b.maxX, r.minX + 0.5, "在回车左边")
+        XCTAssertGreaterThan(b.minX, a.maxX + 40, "不在 123 旁边了")
+        XCTAssertEqual(abs(sp.minY - b.minY) < 1, true, "和空格同一排")
         XCTAssertEqual(pk.currentTitle, "，")
         XCTAssertNotNil(all(pk).compactMap { $0 as? UILabel }.first(where: { $0.text == "。" }), "右上角有小字「。」")
         XCTAssertTrue(KeyboardViewController.punctPicksPeriod(dy: -20))
@@ -943,10 +952,18 @@ final class KeyboardSmokeTests: XCTestCase {
         }
         XCTAssertTrue(bad.isEmpty, "这些点按不到任何键：\(bad.prefix(10))")
         let q = try keyNamed(vc, "q"), w = try keyNamed(vc, "w")
-        let qf = q.convert(q.bounds, to: vc.view), wf = w.convert(w.bounds, to: vc.view)
-        let seam = CGPoint(x: (qf.maxX + wf.minX) / 2, y: qf.midY)
+        let qf = q.convert(q.faceBounds, to: vc.view), wf = w.convert(w.faceBounds, to: vc.view)
+        let seam = CGPoint(x: (qf.maxX + wf.minX) / 2, y: qf.midY)      // 看得见的缝正中
         XCTAssertTrue(vc.view.hitTest(seam, with: nil) === r, "缝里的触摸由接线员收")
-        XCTAssertTrue(vc.view.hitTest(CGPoint(x: qf.midX, y: qf.minY - 3), with: nil) === r, "第一排上沿到候选栏之间那条缝也由接线员收")
+        let cellTop = q.convert(q.bounds, to: vc.view).minY
+        XCTAssertTrue(vc.view.hitTest(CGPoint(x: qf.midX, y: cellTop + 2), with: nil) === r, "第一排键面上沿以上那一条（格子的上沿）也由接线员收")
+        XCTAssertNotNil(vc.keyUnder(seam), "看得见的缝里按得到键")
+        // 四个格子的角：q w 下面的 a，交界处也一定有键
+        let aKey = try keyNamed(vc, "a")
+        let af = aKey.convert(aKey.faceBounds, to: vc.view)
+        let corner = CGPoint(x: (qf.maxX + wf.minX) / 2, y: (qf.maxY + af.minY) / 2)
+        XCTAssertNotNil(vc.keyUnder(corner), "上两个键、下一个键的交界处")
+        XCTAssertGreaterThan(r.nearest(to: r.convert(corner, from: vc.view))?.score ?? -99, -1, "交界处落在某个格子里面（不是靠『离得近』兜底）")
     }
 
     /// 缝里归离得近的那个键
@@ -1014,7 +1031,7 @@ final class KeyboardSmokeTests: XCTestCase {
     }
 
     /// 第二排的键往上滑进了第一排的键：是「按偏了滑过去改」，打第一排的字母，不是第二排键的符号
-    func testSwipeUpIntoRowAboveIsSlideNotSymbol() throws {
+    func testSwipeUpLocksKeyEvenWhenFingerReachesRowAbove() throws {
         let vc = makeKeyboard()
         let r = try XCTUnwrap(vc.router)
         var typedSymbols: [String] = []
@@ -1022,10 +1039,21 @@ final class KeyboardSmokeTests: XCTestCase {
         let s = try keyNamed(vc, "s"), w = try keyNamed(vc, "w")
         let cs = center(s, in: r), up = CGPoint(x: cs.x, y: center(w, in: r).y)
         r.fingerDown(1, at: cs, time: 0)
-        r.fingerMoved(1, to: up)
+        r.fingerMoved(1, to: CGPoint(x: cs.x, y: cs.y - 14))      // 往上够 12pt、竖向为主：锁住 s
+        XCTAssertEqual(vc.previewText, "！", "锁住以后气泡显示要打的符号")
+        r.fingerMoved(1, to: up)                                   // 一直滑进上一排的键上面也不换键（用户 10-26：往上滑老滑进另一个键）
+        XCTAssertEqual(vc.previewText, "！")
         r.fingerUp(1, at: up, time: 0.3, cancelled: false)
-        XCTAssertTrue(typedSymbols.isEmpty)
-        XCTAssertTrue(vc.buffer == "w" || vc.buffer == "e", "滑进了上一排：\(vc.buffer)")
+        XCTAssertEqual(typedSymbols, ["！"], "打的是 s 的上滑符号，不是上一排的字母")
+        XCTAssertEqual(vc.buffer, "")
+        XCTAssertEqual(r.stats.swiped, 1)
+        // 锁住以后拐成横滑：解锁，照旧是「滑过去改」
+        r.fingerDown(2, at: cs, time: 1)
+        r.fingerMoved(2, to: CGPoint(x: cs.x, y: cs.y - 14))
+        r.fingerMoved(2, to: CGPoint(x: cs.x + 40, y: cs.y - 14))      // 横向 40 > 竖向 14：不再是上滑
+        r.fingerUp(2, at: CGPoint(x: cs.x + 40, y: cs.y - 14), time: 1.3, cancelled: false)
+        XCTAssertEqual(typedSymbols, ["！"], "拐成横滑就不再打符号")
+        XCTAssertFalse(vc.buffer.isEmpty)
     }
 
     /// 系统把触摸抢走（边缘手势）：短促的一下点按照样打出来，不丢字；拖了很久的才算取消
@@ -1250,9 +1278,10 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertTrue(t2.contains("你好"), "全拼照旧：\(t2.prefix(8))")
     }
 
-    // MARK: 候选条 / 展开箭头 / 斜着滑（仿豆包）
+    // MARK: 候选条 / 展开箭头 / 横滑手感（仿豆包）
 
     private func candBar(_ vc: KeyboardViewController) -> CandidateBar? { all(vc.view).compactMap { $0 as? CandidateBar }.first }
+    private func stripView(_ bar: CandidateBar) -> UIScrollView? { all(bar).compactMap { $0 as? UIScrollView }.first }
 
     /// 展开箭头：顶栏最右端从上到下一整列（宽 ≥ 44）都是它，点在候选行高度上也能展开；候选横滑条停在它左边，不会滑到它底下被截走点按
     /// （用户 10-26：箭头经常点了没反应；豆包的 DividerArrowEndingView 是整条候选行高 × 44dp 一整块）
@@ -1267,7 +1296,7 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertEqual(f.minY, 0, accuracy: 0.5)
         XCTAssertEqual(f.maxY, bar.bounds.height, accuracy: 0.5)
         XCTAssertEqual(f.maxX, bar.bounds.width, accuracy: 0.5)
-        let scroll = try XCTUnwrap(all(bar).compactMap { $0 as? AxisScrollView }.first)
+        let scroll = try XCTUnwrap(stripView(bar))
         XCTAssertLessThanOrEqual(scroll.convert(scroll.bounds, to: bar).maxX, f.minX + 0.5, "候选条不能滑到箭头底下")
         for y in stride(from: 1.0, to: Double(bar.bounds.height), by: 6) {
             for dx in [1.0, 20.0, 44.0] {
@@ -1289,42 +1318,146 @@ final class KeyboardSmokeTests: XCTestCase {
         bar.showPredictions(ctx: "你好", items: ["吗", "呀", "啊"])
         bar.layoutIfNeeded()
         let cross = try XCTUnwrap(all(bar).compactMap { $0 as? UIButton }.first(where: { $0.accessibilityIdentifier == "xmark" }))
-        let scroll = try XCTUnwrap(all(bar).compactMap { $0 as? AxisScrollView }.first)
+        let scroll = try XCTUnwrap(stripView(bar))
         XCTAssertLessThanOrEqual(scroll.convert(scroll.bounds, to: bar).maxX, cross.convert(cross.bounds, to: bar).minX - 8 + 0.5, "候选条停在 ✕ 的触摸范围左边")
         let p = CGPoint(x: bar.bounds.width - 2, y: bar.bounds.height - 8)
         XCTAssertTrue(bar.hitTest(p, with: nil) === cross, "✕ 右边到屏幕边、下面的空处也算点到 ✕：\(String(describing: bar.hitTest(p, with: nil)))")
     }
 
-    /// 斜着滑：横滑条只看横向动了多远，竖向随便偏（豆包 RecyclerView 的规则）。UIScrollView 默认「这个方向滑不动就不接」，
-    /// 拇指画弧偏竖的手势整个被拒。做法：竖向声明可弹（手势才肯接）、偏移钉死在 0；按钮上起手也能拖
-    func testCandidateStripAcceptsDiagonalDrags() throws {
-        let vc = makeKeyboard()
-        for c in "nihao".map({ String($0) }) { tap(vc, c) }
-        let bar = try XCTUnwrap(candBar(vc))
-        let strip = try XCTUnwrap(all(bar).compactMap { $0 as? AxisScrollView }.first)
-        XCTAssertTrue(strip.alwaysBounceVertical, "竖向要声明可弹，斜着的手势才会被接")
-        XCTAssertTrue(strip.touchesShouldCancel(in: UIButton()), "在候选字上起手也能拖")
-        strip.contentOffset = CGPoint(x: 3, y: 17)
-        XCTAssertEqual(strip.contentOffset.x, 3)
-        XCTAssertEqual(strip.contentOffset.y, 0, "竖向偏移要钉死")
-        strip.setContentOffset(CGPoint(x: 12, y: -9), animated: false)
-        XCTAssertEqual(strip.contentOffset.y, 0)
-        // 竖着滑的两个列表反过来：横向钉死
-        let panel = try XCTUnwrap(all(vc.view).first(where: { $0.accessibilityIdentifier == "panel" }) as? AxisScrollView)
-        XCTAssertTrue(panel.alwaysBounceHorizontal)
-        XCTAssertFalse(panel.delaysContentTouches, "展开面板按下去立刻有反应，手指按在候选字上也能滑")
-        panel.contentOffset = CGPoint(x: 25, y: 40)
-        XCTAssertEqual(panel.contentOffset.x, 0)
+    /// 横滑只看横向动了多远，竖向偏多少都不管（斜着滑照样滑）；过 slop 的那一点接着走，不跳变（豆包 RecyclerView 的 touchSlop 规则）
+    func testStripSlopIgnoresVerticalDrift() {
+        var m = StripMotion()
+        m.setRange(min: 0, max: 1000)
+        m.touchDown(x: 100, y: 50, time: 0)
+        XCTAssertFalse(m.touchMoved(x: 100, y: 95, time: 0.01), "只竖着动不算拖动")
+        XCTAssertFalse(m.touchMoved(x: 96, y: 100, time: 0.02), "横向没过 8 不算")
+        XCTAssertTrue(m.touchMoved(x: 80, y: 140, time: 0.03), "横向过了线，竖向偏出去 90 也算拖动")
+        XCTAssertEqual(m.offset, 12, accuracy: 0.001, "从过线的那一点（-8）接着走：20 - 8 = 12")
+        XCTAssertTrue(m.touchMoved(x: 70, y: 150, time: 0.04))
+        XCTAssertEqual(m.offset, 22, accuracy: 0.001)
     }
 
-    /// 触摸统计新增：落在缝里 / 屏幕边缘各记一笔（真机日志里看「按了没反应」是不是落在这两处）
-    func testTouchStatsCountSeamAndEdge() throws {
+    /// 甩出去之后按住：立刻停住，而且马上跟手，反方向一动就走，不用再过 slop —— 快速来回甩不会「停了不立刻反向」
+    func testStripCatchFlingThenReverseImmediately() {
+        var m = StripMotion()
+        m.setRange(min: 0, max: 5000)
+        m.touchDown(x: 300, y: 0, time: 0)
+        var x: CGFloat = 300, t = 0.0
+        for _ in 0..<6 { t += 0.016; x -= 24; m.touchMoved(x: x, y: 0, time: t) }      // 向左甩，约 1500pt/s
+        XCTAssertTrue(m.touchUp(x: x - 24, time: t + 0.016))
+        XCTAssertTrue(m.flinging, "够快就甩出去")
+        let start = m.offset
+        for _ in 0..<10 { m.step(dt: 0.016) }
+        XCTAssertGreaterThan(m.offset, start + 20, "惯性在走")
+        XCTAssertTrue(m.flinging)
+        // 还在惯性里按住：停住并算拖动
+        XCTAssertTrue(m.touchDown(x: 200, y: 0, time: 5))
+        XCTAssertFalse(m.flinging)
+        let held = m.offset
+        XCTAssertTrue(m.touchMoved(x: 204, y: 0, time: 5.01), "只挪了 4pt（没过 slop）也立刻跟手")
+        XCTAssertEqual(m.offset, held - 4, accuracy: 0.001, "反方向")
+        // 反方向也能马上甩
+        var x2: CGFloat = 204
+        var t2 = 5.01
+        for _ in 0..<5 { t2 += 0.016; x2 += 26; m.touchMoved(x: x2, y: 0, time: t2) }
+        m.touchUp(x: x2 + 26, time: t2 + 0.016)
+        XCTAssertTrue(m.flinging)
+        let before = m.offset
+        m.step(dt: 0.05)
+        XCTAssertLessThan(m.offset, before, "往回走")
+    }
+
+    /// 手指停了一会儿再抬 → 不甩（Android VelocityTracker：停了 40 毫秒以上历史作废）；速度太小也不甩
+    func testStripPausedOrSlowReleaseDoesNotFling() {
+        var m = StripMotion()
+        m.setRange(min: 0, max: 5000)
+        m.touchDown(x: 300, y: 0, time: 0)
+        var x: CGFloat = 300, t = 0.0
+        for _ in 0..<6 { t += 0.016; x -= 24; m.touchMoved(x: x, y: 0, time: t) }
+        XCTAssertTrue(m.touchUp(x: x, time: t + 0.12))      // 停了 120 毫秒才抬
+        XCTAssertFalse(m.flinging)
+        m.touchDown(x: 300, y: 0, time: 10)
+        x = 300; t = 10
+        for _ in 0..<6 { t += 0.05; x -= 1.5; m.touchMoved(x: x, y: 0, time: t) }      // 慢慢蹭，30pt/s
+        m.touchUp(x: x - 1.5, time: t + 0.05)
+        XCTAssertFalse(m.flinging)
+    }
+
+    /// 惯性的距离照 Android OverScroller：1000pt/s 的甩动大约滑 194pt，历时约 0.55 秒；到头就停
+    func testStripFlingDistanceFollowsOverScroller() {
+        var m = StripMotion()
+        m.setRange(min: 0, max: 5000)
+        m.jump(to: 1000)
+        m.touchDown(x: 300, y: 0, time: 0)
+        var x: CGFloat = 300, t = 0.0
+        for _ in 0..<8 { t += 0.01; x -= 10; m.touchMoved(x: x, y: 0, time: t) }      // 恰好 1000pt/s
+        m.touchUp(x: x - 10, time: t + 0.01)
+        let start = m.offset
+        var steps = 0
+        while m.step(dt: 0.01), steps < 300 { steps += 1 }
+        XCTAssertEqual(m.offset - start, 194, accuracy: 25, "距离：\(m.offset - start)")
+        XCTAssertEqual(Double(steps) * 0.01, 0.555, accuracy: 0.08, "时长")
+        // 到头就停
+        var e = StripMotion()
+        e.setRange(min: 0, max: 100)
+        e.touchDown(x: 300, y: 0, time: 0)
+        x = 300; t = 0
+        for _ in 0..<4 { t += 0.016; x -= 12; e.touchMoved(x: x, y: 0, time: t) }
+        e.touchUp(x: x - 12, time: t + 0.016)
+        for _ in 0..<200 { if !e.step(dt: 0.016) { break } }
+        XCTAssertFalse(e.flinging)
+        XCTAssertLessThanOrEqual(e.offset, 100)
+    }
+
+    /// 顶栏候选条接上了这套手感：UIScrollView 自带的拖动关掉，手势 / 惯性都走 StripMotion，位置画到条上
+    func testCandidateStripUsesStripMotion() throws {
+        let vc = makeKeyboard()
+        for c in ["n", "i"] { tap(vc, c) }
+        let bar = try XCTUnwrap(candBar(vc))
+        let strip = try XCTUnwrap(stripView(bar))
+        bar.layoutIfNeeded()
+        XCTAssertFalse(strip.isScrollEnabled, "UIScrollView 自带的拖动规矩和豆包不一样，关掉")
+        XCTAssertGreaterThan(strip.contentSize.width, strip.bounds.width, "候选比一行宽，才有得滑")
+        XCTAssertEqual(strip.contentOffset.x, 0, accuracy: 0.01)
+        // 斜着拖（竖向偏 70pt）：照样滑
+        XCTAssertFalse(bar.stripDown(CGPoint(x: 300, y: 600), 0))
+        var x: CGFloat = 300, y: CGFloat = 600, t = 0.0
+        for _ in 0..<6 { t += 0.016; x -= 22; y += 12; bar.stripMoved(CGPoint(x: x, y: y), t) }
+        XCTAssertGreaterThan(strip.contentOffset.x, 50, "斜着拖也跟手：\(strip.contentOffset.x)")
+        bar.stripUp(CGPoint(x: x - 22, y: y + 12), t + 0.016)
+        XCTAssertTrue(bar.stripState.flinging, "甩出去")
+        let a = strip.contentOffset.x
+        bar.stripStep(0.016)
+        XCTAssertGreaterThan(strip.contentOffset.x, a, "惯性画到条上")
+        // 惯性里按住：停住，反方向立刻能走
+        XCTAssertTrue(bar.stripDown(CGPoint(x: 200, y: 600), 2))
+        XCTAssertFalse(bar.stripState.flinging)
+        let held = strip.contentOffset.x
+        bar.stripMoved(CGPoint(x: 210, y: 600), 2.01)
+        XCTAssertEqual(strip.contentOffset.x, held - 10, accuracy: 0.01)
+        bar.stripCancel()
+        XCTAssertFalse(bar.stripState.moving)
+        // 换了一串拼音：回到最前面
+        tap(vc, "a")
+        XCTAssertEqual(strip.contentOffset.x, 0, accuracy: 0.01)
+    }
+
+    /// 其余两个竖着滑的列表：在按钮上起手也能拖；展开面板按下去立刻有反应
+    func testVerticalListsLetFingerStartOnButtons() throws {
+        let vc = makeKeyboard()
+        let panel = try XCTUnwrap(all(vc.view).first(where: { $0.accessibilityIdentifier == "panel" }) as? TouchFirstScroll)
+        XCTAssertTrue(panel.touchesShouldCancel(in: UIButton()), "手指按在候选字上也能滑")
+        XCTAssertFalse(panel.delaysContentTouches, "按下去立刻有反应，不等 0.15 秒")
+    }
+
+    /// 触摸统计：屏幕边缘记一笔；26 键下格子紧挨着铺满，没有「落在缝里」这回事
+    func testTouchStatsCountEdgeAndNoGapIn26Key() throws {
         let vc = makeKeyboard()
         let r = try XCTUnwrap(vc.router)
         let q = try keyNamed(vc, "q"), w = try keyNamed(vc, "w")
         let qf = q.convert(q.bounds, to: r), wf = w.convert(w.bounds, to: r)
         r.fingerDown(1, at: CGPoint(x: (qf.maxX + wf.minX) / 2, y: qf.midY), time: 0)
-        XCTAssertEqual(r.stats.gap, 1, "落在 q w 之间的缝里")
+        XCTAssertEqual(r.stats.gap, 0, "q w 的格子紧挨着，没有缝")
         r.fingerUp(1, at: CGPoint(x: qf.maxX + 1, y: qf.midY), time: 0.1, cancelled: false)
         r.fingerDown(2, at: CGPoint(x: 3, y: qf.midY), time: 0)
         XCTAssertEqual(r.stats.edge, 1, "屏幕最左边")

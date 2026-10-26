@@ -1,4 +1,5 @@
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 
 /// 配色：嫩芽绿 #16985E、深叶绿 #0F7448、青柠 #B0E082
 enum Brand {
@@ -9,9 +10,9 @@ enum Brand {
 
 /// 按键：按住时变深色。字母区里的键不自己收触摸，由 KeyboardRoot 统一接线（见那边的说明）
 final class KeyButton: UIButton {
-    var normalColor = UIColor.white { didSet { backgroundColor = isHighlighted ? pressedColor : normalColor } }
+    var normalColor = UIColor.white { didSet { paint() } }
     var pressedColor = UIColor.lightGray
-    override var isHighlighted: Bool { didSet { backgroundColor = isHighlighted ? pressedColor : normalColor } }
+    override var isHighlighted: Bool { didSet { paint() } }
     /// 能按的范围比看得见的按键大这么多（顶栏的圆形按钮用：圆外面一圈也算按到）
     var hitOutset: CGFloat = 0
     /// 由 KeyboardRoot 接线的键（字母区里的键）。🌐 键要系统给的真实触摸事件才能弹出输入法列表，不走这条
@@ -28,6 +29,56 @@ final class KeyButton: UIButton {
     /// 这次触摸从按下到现在，手指横竖挪了多少（KeyboardRoot 每次更新）
     var dragDelta = CGPoint.zero
 
+    /// 按键的「格子」和看得见的「键面」不是一回事（仿豆包：格子紧挨着铺满整个键盘，一条缝都没有；键面比格子小一圈，那一圈留白才是看见的「缝」）。
+    /// 手指落在哪个格子里就是按哪个键——按在缝里就是按在某个格子里，不存在「缝里没反应」。faceInset = 键面四周比格子让出多少；0 = 没有这层区分（顶栏的圆形按钮、九键）
+    var faceInset = UIEdgeInsets.zero { didSet { applyFaceInset() } }
+    private var face: UIView?
+    /// 键面（看得见的那块）在按键自己坐标里的范围
+    var faceBounds: CGRect { bounds.inset(by: faceInset) }
+
+    private var faceCons: [NSLayoutConstraint] = []
+    /// 键面的布局参考：按键里的小字、声波、中英图案贴着它排，不贴格子边
+    private(set) lazy var faceGuide: UILayoutGuide = {
+        let g = UILayoutGuide()
+        addLayoutGuide(g)
+        faceCons = [
+            g.topAnchor.constraint(equalTo: topAnchor, constant: faceInset.top),
+            g.leadingAnchor.constraint(equalTo: leadingAnchor, constant: faceInset.left),
+            bottomAnchor.constraint(equalTo: g.bottomAnchor, constant: faceInset.bottom),
+            trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: faceInset.right),
+        ]
+        NSLayoutConstraint.activate(faceCons)
+        return g
+    }()
+
+    private func paint() { (face ?? self).backgroundColor = isHighlighted ? pressedColor : normalColor }
+
+    private func applyFaceInset() {
+        if faceInset != .zero, face == nil {
+            // 底色、圆角、阴影从按键本身挪到键面上
+            let f = UIView()
+            f.isUserInteractionEnabled = false
+            f.backgroundColor = backgroundColor
+            f.layer.cornerRadius = layer.cornerRadius
+            f.layer.shadowColor = layer.shadowColor
+            f.layer.shadowOpacity = layer.shadowOpacity
+            f.layer.shadowRadius = layer.shadowRadius
+            f.layer.shadowOffset = layer.shadowOffset
+            layer.cornerRadius = 0
+            layer.shadowOpacity = 0
+            backgroundColor = .clear
+            insertSubview(f, at: 0)
+            face = f
+        }
+        if faceCons.count == 4 {
+            faceCons[0].constant = faceInset.top
+            faceCons[1].constant = faceInset.left
+            faceCons[2].constant = faceInset.bottom
+            faceCons[3].constant = faceInset.right
+        }
+        setNeedsLayout()
+    }
+
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         bounds.insetBy(dx: -hitOutset, dy: -hitOutset).contains(point)
     }
@@ -35,7 +86,12 @@ final class KeyButton: UIButton {
     override func layoutSubviews() {
         super.layoutSubviews()
         // 给阴影一条现成的路径：没有的话每个键每次重绘都要现算轮廓，打字时会拖慢
-        layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: layer.cornerRadius).cgPath
+        if let f = face {
+            f.frame = faceBounds
+            f.layer.shadowPath = UIBezierPath(roundedRect: f.bounds, cornerRadius: f.layer.cornerRadius).cgPath
+        } else {
+            layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: layer.cornerRadius).cgPath
+        }
     }
 }
 
@@ -50,9 +106,9 @@ final class PadButton: UIButton {
 
 /// 候选 / 音节这类「在滑动区里、松手才算点」的按钮：松手时手指稍微滑出了按钮边（但没在滑动列表）也算点到。
 /// 以前只认 touchUpInside，手指一滑出边（手指带一点滑动是常态）这一下就丢了，用户感觉「滑的时候经常没反应」
-func tapIsNear(_ b: UIView, _ event: UIEvent?, scroll: UIScrollView?) -> Bool {
-    // isTracking 也要挡（仿豆包的 touchSlop 判定）：手指已经按进滑动区开始拖，只是系统还没判成拖动，这时松手不该算点选
-    if let s = scroll, s.isTracking || s.isDragging || s.isDecelerating { return false }
+func tapIsNear(_ b: UIView, _ event: UIEvent?, busy: Bool) -> Bool {
+    // busy = 列表正被手指拖着 / 还在惯性滑（仿豆包的 touchSlop 判定）：这时松手不该算点选
+    if busy { return false }
     guard let p = event?.allTouches?.first?.location(in: b) else { return false }
     return b.bounds.insetBy(dx: -14, dy: -20).contains(p)
 }
@@ -96,8 +152,9 @@ final class KeyboardRoot: UIView {
     var letterBias: ((KeyButton) -> CGFloat)?
     private(set) var stats = TouchStats()
 
-    /// 上滑超过这么多、而且手指还在原来那个键上，才算「上滑打数字」
-    static let swipeUpDistance: CGFloat = 16
+    /// 往上滑超过这么多、而且竖向为主，就锁在这个键上「上滑打数字」；回落到不足 swipeUnlockDistance、或拐成横滑才解锁
+    static let swipeUpDistance: CGFloat = 12
+    static let swipeUnlockDistance: CGFloat = 6
 
     private struct Finger {
         var key: KeyButton
@@ -210,7 +267,7 @@ final class KeyboardRoot: UIView {
         }
         if p.x < 14 || p.x > bounds.width - 14 { stats.edge += 1 }
         guard let best = nearest(to: p), best.score > -30 else { stats.miss += 1; return }
-        if best.score < 0 { stats.gap += 1 }
+        if !best.key.convert(best.key.bounds, to: self).insetBy(dx: -1, dy: -1).contains(p) { stats.gap += 1 }      // 不在任何格子里（九键键间的真缝）
         fingers[id] = Finger(key: best.key, start: p, t0: time)
         let k = best.key
         k.touchHeld = true
@@ -226,9 +283,13 @@ final class KeyboardRoot: UIView {
         k.dragDelta = CGPoint(x: dx, y: dy)
         if k.commitsOnRelease {
             let near = nearest(to: p, sticky: k)
-            f.far = (near?.score ?? -100) < -70
-            // 上滑：手指还在这个键上、往上滑够远 → 松手打它的数字 / 符号；滑进了上一排的键就是「滑过去改」
-            let up = k.swipeUp != nil && dy < -Self.swipeUpDistance && -dy > abs(dx) && near?.key === k
+            // 上滑锁键（用户 10-26：往上滑老滑进上一排的键）：竖向为主、往上够远就锁在这个键上，手指滑到上一排哪个键上面都不换键，松手打它的数字 / 符号；
+            // 一旦锁住，回落到起点附近或拐成横滑才解锁（解锁后照旧是「滑过去改」）
+            var up = f.up
+            if k.swipeUp != nil {
+                up = up ? (dy < -Self.swipeUnlockDistance && -dy > abs(dx) * 0.8) : (dy < -Self.swipeUpDistance && -dy > abs(dx) * 1.5)
+            }
+            f.far = !up && (near?.score ?? -100) < -70
             if up != f.up {
                 f.up = up
                 onKeyMoved?(k, up ? k.swipeUp?.text : nil)
@@ -320,7 +381,7 @@ final class KeyPreview: UIView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)      // 图层属性默认会渐变 0.25 秒：气泡要立刻出现，不要过渡
         defer { CATransaction.commit() }
-        let k = key.convert(key.bounds, to: host)
+        let k = key.convert((key as? KeyButton)?.faceBounds ?? key.bounds, to: host)      // 按键面（看得见的那块），不是格子
         let ext: CGFloat = 12, bodyH: CGFloat = 46, neck: CGFloat = 10, r: CGFloat = 8
         var left = ext, right = ext
         if k.minX - ext < 2 { left = 0; right = ext * 2 }                       // 靠左边缘：气泡往右偏
@@ -399,40 +460,214 @@ final class WaveView: UIView {
     }
 }
 
-/// 只沿一个方向滑的列表（候选横滑条、九键音节列表、展开的候选面板），仿豆包（Android RecyclerView）的拖动规则：
-/// ① 在按钮上按下也能直接拖：滑动一开始就取消按钮的点按，不用等、也不丢；
-/// ② 只看沿滑动方向动了多远，另一个方向随便偏：手指斜着滑也照样滑。
-///    UIScrollView 默认「这个方向滑不动就不接」——横滑条上手指走势偏竖（单手拇指画弧基本都偏竖）整个手势直接被拒，按钮收到的是一次拖出去的点按，
-///    表现就是「斜着滑没反应」甚至误选一个候选。把另一个方向声明成「可以弹」，手势就接下来，再把那个方向的偏移钉死在 0。
-class AxisScrollView: UIScrollView {
-    /// 沿哪个方向滑；另一个方向锁死
-    var along: NSLayoutConstraint.Axis = .horizontal { didSet { applyAxis() } }
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        applyAxis()
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) 不用") }
-
-    private func applyAxis() {
-        alwaysBounceVertical = along == .horizontal
-        alwaysBounceHorizontal = along == .vertical
-    }
-
-    private func locked(_ o: CGPoint) -> CGPoint { along == .horizontal ? CGPoint(x: o.x, y: 0) : CGPoint(x: 0, y: o.y) }
-
-    override var contentOffset: CGPoint {
-        get { super.contentOffset }
-        set { super.contentOffset = locked(newValue) }
-    }
-
-    override func setContentOffset(_ contentOffset: CGPoint, animated: Bool) {
-        super.setContentOffset(locked(contentOffset), animated: animated)
-    }
-
-    /// 从按钮上起手也照滑不误
+/// 竖向滑动的列表（九键音节列表、展开的候选面板）：在按钮上按下也能直接拖——滑动一开始就取消按钮的点按，不用等、也不丢。
+/// UIScrollView 默认「按在 UIControl 上就不抢触摸」，手指按在按钮上就滑不动
+class TouchFirstScroll: UIScrollView {
     override func touchesShouldCancel(in view: UIView) -> Bool { true }
+}
+
+/// 顶栏候选横滑条的拖动 + 惯性手感，照抄 Android RecyclerView（豆包候选栏就是它；反编译 CandidateListView）。纯数字，不碰 UIKit，测试直接喂坐标。
+/// 为什么不用 UIScrollView 自带的：它的规矩和豆包不一样，表现就是「有时候没反应」——
+/// ① 手势走势偏竖（拇指画弧基本都偏竖）整个被拒；② 按住正在惯性滑的条要等手势重新识别，来回快甩时会「停了不立刻反向」；③ 手指停一下再抬也会甩。
+/// RecyclerView 的规矩：
+/// ① 横向挪过 touchSlop（8）才算拖动，竖向偏多少都不管；拖动从过线的那一点接着走，不跳；
+/// ② 按住正在惯性滑的条：立刻停住并算拖动，接下来手指怎么动它就怎么动，不用再过 slop —— 反方向快甩马上就能接上；
+/// ③ 松手速度取最后 80 毫秒的斜率，手指停了 40 毫秒以上再抬就不甩（VelocityTracker）；低于 50pt/s 不甩，最高 8000pt/s；
+/// ④ 惯性用 OverScroller 的 spline 曲线（距离 D = F·e^(r/(r-1)·ln(0.35v/F))，时长 T = e^(ln(0.35v/F)/(r-1))，位置 D·(1-(1-t/T)^(1/0.35))）；
+/// ⑤ 到头就停（OVER_SCROLL_NEVER），不弹。
+struct StripMotion {
+    static let slop: CGFloat = 8
+    static let minFling: CGFloat = 50
+    static let maxFling: CGFloat = 8000
+    private static let flingF = 0.015 * 51_889.0      // 摩擦 × 物理系数（160 基准的 dp，速度单位 pt/s）
+    private static let decelRate = 2.358201            // ln(0.78)/ln(0.9)
+
+    private struct Fling { let start: CGFloat, sign: CGFloat, distance: Double, duration: Double, power: Double; var elapsed: Double }
+
+    private(set) var offset: CGFloat = 0
+    private(set) var minOffset: CGFloat = 0
+    private(set) var maxOffset: CGFloat = 0
+    private(set) var dragging = false
+    private var fling: Fling?
+    private var down: CGPoint?
+    private var lastX: CGFloat = 0
+    private var samples: [(t: TimeInterval, x: CGFloat)] = []
+
+    var flinging: Bool { fling != nil }
+    /// 手指拖着或还在惯性滑
+    var moving: Bool { dragging || fling != nil }
+
+    private func clamped(_ x: CGFloat) -> CGFloat { Swift.min(Swift.max(x, minOffset), maxOffset) }
+
+    /// 可滑的范围变了（内容变长变短 / 两头留空变了）
+    mutating func setRange(min lo: CGFloat, max hi: CGFloat) {
+        minOffset = lo
+        maxOffset = Swift.max(lo, hi)
+        offset = clamped(offset)
+    }
+
+    /// 程序直接把位置放到某处（换了一串拼音，回到最前面）：停掉一切
+    mutating func jump(to x: CGFloat) {
+        fling = nil
+        dragging = false
+        offset = clamped(x)
+    }
+
+    /// 手指按下。返回 true = 按住了一个正在惯性滑的条：停住，并且立刻算拖动
+    @discardableResult
+    mutating func touchDown(x: CGFloat, y: CGFloat, time: TimeInterval) -> Bool {
+        down = CGPoint(x: x, y: y)
+        lastX = x
+        samples = [(time, x)]
+        if fling != nil {
+            fling = nil
+            dragging = true
+            return true
+        }
+        dragging = false
+        return false
+    }
+
+    /// 手指移动。返回 true = 现在算拖动（调用方据此把位置画出来、取消按钮的点按）
+    @discardableResult
+    mutating func touchMoved(x: CGFloat, y: CGFloat, time: TimeInterval) -> Bool {
+        record(x, time)
+        guard let d = down else { return false }
+        if !dragging {
+            let dx = x - d.x
+            guard abs(dx) > Self.slop else { return false }      // 只看横向；竖向偏多少都不管
+            dragging = true
+            lastX = d.x + (dx > 0 ? Self.slop : -Self.slop)
+        }
+        offset = clamped(offset - (x - lastX))
+        lastX = x
+        return true
+    }
+
+    /// 手指抬起。返回 true = 这次是拖动（不是点按）；够快就甩出去
+    @discardableResult
+    mutating func touchUp(x: CGFloat, time: TimeInterval) -> Bool {
+        record(x, time)      // 抬起也算一个采样：手指停了 40 毫秒以上再抬，历史清空 → 速度 0 → 不甩
+        let wasDragging = dragging
+        if wasDragging { startFling(velocity: -fingerVelocity()) }
+        down = nil
+        dragging = false
+        samples = []
+        return wasDragging
+    }
+
+    /// 触摸被系统取消：停住，不甩
+    mutating func touchCancel() {
+        down = nil
+        dragging = false
+        samples = []
+    }
+
+    /// 惯性往前走 dt 秒。返回 true = 还在走
+    @discardableResult
+    mutating func step(dt: TimeInterval) -> Bool {
+        guard var f = fling else { return false }
+        f.elapsed += dt
+        let u = Swift.min(f.elapsed / f.duration, 1)
+        let target = f.start + f.sign * CGFloat(f.distance * (1 - pow(1 - u, f.power)))
+        let c = clamped(target)
+        offset = c
+        if u >= 1 || c != target { fling = nil; return false }      // 走完 / 撞到头
+        fling = f
+        return true
+    }
+
+    private mutating func record(_ x: CGFloat, _ t: TimeInterval) {
+        if let last = samples.last, t - last.t > 0.04 { samples.removeAll() }
+        samples.append((t, x))
+        samples.removeAll { t - $0.t > 0.08 }
+    }
+
+    /// 手指的速度（pt/s，向右为正）：采样点的最小二乘斜率
+    private func fingerVelocity() -> CGFloat {
+        guard samples.count >= 2, let f = samples.first, let l = samples.last, l.t > f.t else { return 0 }
+        let n = Double(samples.count)
+        let tm = samples.reduce(0.0) { $0 + ($1.t - f.t) } / n
+        let xm = samples.reduce(0.0) { $0 + Double($1.x) } / n
+        var num = 0.0, den = 0.0
+        for s in samples {
+            let dt = (s.t - f.t) - tm
+            num += dt * (Double(s.x) - xm)
+            den += dt * dt
+        }
+        return den > 0 ? CGFloat(num / den) : 0
+    }
+
+    private mutating func startFling(velocity v0: CGFloat) {
+        guard abs(v0) >= Self.minFling else { return }
+        let v = Swift.max(-Self.maxFling, Swift.min(Self.maxFling, v0))
+        if (v < 0 && offset <= minOffset) || (v > 0 && offset >= maxOffset) { return }      // 已经在头 / 尾还往外甩：不动
+        let r = Self.decelRate
+        let l = log(0.35 * Double(abs(v)) / Self.flingF)
+        let distance = Self.flingF * exp(r / (r - 1) * l)
+        let duration = exp(l / (r - 1))
+        fling = Fling(start: offset, sign: v < 0 ? -1 : 1, distance: distance, duration: duration, power: Double(abs(v)) * duration / distance, elapsed: 0)
+    }
+}
+
+/// 候选横滑条上的拖动手势：只管把触摸交给 StripMotion。位置用窗口坐标（条自己在动，用条的坐标会越算越偏）
+final class StripPan: UIGestureRecognizer {
+    var onDown: ((CGPoint, TimeInterval) -> Bool)?       // 返回 true = 立刻接管（按住了正在惯性滑的条）
+    var onMove: ((CGPoint, TimeInterval) -> Bool)?       // 返回 true = 现在算拖动
+    var onUp: ((CGPoint, TimeInterval) -> Void)?
+    var onCancel: (() -> Void)?
+    private var tracked: UITouch?
+
+    override init(target: Any?, action: Selector?) {
+        super.init(target: target, action: action)
+        delaysTouchesBegan = false
+        delaysTouchesEnded = false
+        cancelsTouchesInView = true
+        addTarget(self, action: #selector(noop))
+    }
+
+    convenience init() { self.init(target: nil, action: nil) }
+
+    @objc private func noop() {}
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard tracked == nil, let t = touches.first else { return }      // 只跟第一根手指
+        tracked = t
+        if onDown?(t.location(in: nil), t.timestamp) == true { state = .began }
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let t = tracked, touches.contains(t) else { return }
+        let dragging = onMove?(t.location(in: nil), t.timestamp) ?? false
+        switch state {
+        case .possible: if dragging { state = .began }
+        case .began, .changed: state = .changed
+        default: break
+        }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let t = tracked, touches.contains(t) else { return }
+        tracked = nil
+        onUp?(t.location(in: nil), t.timestamp)
+        state = state == .possible ? .failed : .ended
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let t = tracked, touches.contains(t) else { return }
+        tracked = nil
+        onCancel?()
+        state = state == .possible ? .failed : .cancelled
+    }
+
+    override func reset() { tracked = nil }
+}
+
+/// CADisplayLink 会强引用它的 target：中间隔一层弱引用，条被拿掉时不会被惯性的定时器拖着不放
+private final class LinkTarget: NSObject {
+    weak var bar: CandidateBar?
+    init(_ b: CandidateBar) { bar = b }
+    @objc func tick(_ l: CADisplayLink) { bar?.linkTick(l) }
 }
 
 extension CandidateBar {
@@ -463,7 +698,11 @@ final class CandidateBar: UIView {
     private let wave = WaveView()
     private let compLabel = UILabel()
     private let expand = PadButton(type: .custom)
-    private let scroll = AxisScrollView()
+    private let scroll = UIScrollView()      // 只负责裁剪和摆位置，拖动 / 惯性自己做（StripMotion）
+    private var motion = StripMotion()
+    private let strip = StripPan()
+    private var flingLink: CADisplayLink?
+    private var lastTick: CFTimeInterval = 0
     private let stack = UIStackView()
     private let undo = PadButton(type: .custom)
     private let hide = KeyButton(type: .custom)         // 不打字时最右边的白色圆形按钮（向下箭头）：收起键盘
@@ -499,8 +738,14 @@ final class CandidateBar: UIView {
         endingDivider.backgroundColor = .separator
         endingDivider.isUserInteractionEnabled = false
         expand.addSubview(endingDivider)
-        scroll.delaysContentTouches = false          // 候选字按下去立刻有反应，不等 0.15 秒
+        scroll.isScrollEnabled = false               // UIScrollView 自己的拖动关掉：规矩和豆包不一样（见 StripMotion）
+        scroll.scrollsToTop = false
         scroll.contentInsetAdjustmentBehavior = .never   // 键盘里没有安全区可让，别给横滑起点掺水分
+        strip.onDown = { [weak self] p, t in self?.stripDown(p, t) ?? false }
+        strip.onMove = { [weak self] p, t in self?.stripMoved(p, t) ?? false }
+        strip.onUp = { [weak self] p, t in self?.stripUp(p, t) }
+        strip.onCancel = { [weak self] in self?.stripCancel() }
+        scroll.addGestureRecognizer(strip)
         let gapTap = UITapGestureRecognizer(target: self, action: #selector(gapTapped(_:)))
         gapTap.cancelsTouchesInView = false          // 只是补「缝里点按落空」的空档，别影响按钮和滑动
         gapTap.delegate = self
@@ -733,19 +978,91 @@ final class CandidateBar: UIView {
             // 仿豆包 updatePinyinOnly：正滑着的时候列表更新不拉回最前面，只把位置夹在新的合法范围里
             stack.setNeedsLayout()
             scroll.layoutIfNeeded()
-            let minO = -scroll.contentInset.left
-            let maxO = max(minO, scroll.contentSize.width - scroll.bounds.width)
-            let x = min(max(scroll.contentOffset.x, minO), maxO)
-            // 位置本来就在合法范围里就别动：setContentOffset 哪怕设成同一个值，也会叫停正在惯性滑动的列表（后台候选晚到，刚好撞上用户在滑）
-            if x != scroll.contentOffset.x { scroll.setContentOffset(CGPoint(x: x, y: 0), animated: false) }
+            syncRange()      // 位置只被夹进新的合法范围；正在拖 / 惯性滑的不受打扰
+            applyOffset()
         } else {
-            scroll.setContentOffset(CGPoint(x: -scroll.contentInset.left, y: 0), animated: false)
+            syncRange()
+            motion.jump(to: -scroll.contentInset.left)
+            stopLink()
+            applyOffset()
         }
     }
     func showUndo(_ on: Bool) { undo.isHidden = !on }
 
+    // MARK: 横滑条的拖动 / 惯性（手势和测试都从这几个入口进）
+
+    private func syncRange() {
+        let lo = -scroll.contentInset.left
+        motion.setRange(min: lo, max: scroll.contentSize.width + scroll.contentInset.right - scroll.bounds.width)
+    }
+
+    private func applyOffset() {
+        if scroll.contentOffset.x != motion.offset { scroll.contentOffset = CGPoint(x: motion.offset, y: 0) }
+    }
+
+    /// 手指按下。返回 true = 按住了一个正在惯性滑的条（停住，立刻跟手）
+    @discardableResult
+    func stripDown(_ p: CGPoint, _ t: TimeInterval) -> Bool {
+        syncRange()
+        let caught = motion.touchDown(x: p.x, y: p.y, time: t)
+        if caught { stopLink() }
+        return caught
+    }
+
+    @discardableResult
+    func stripMoved(_ p: CGPoint, _ t: TimeInterval) -> Bool {
+        let dragging = motion.touchMoved(x: p.x, y: p.y, time: t)
+        if dragging { applyOffset() }
+        return dragging
+    }
+
+    func stripUp(_ p: CGPoint, _ t: TimeInterval) {
+        motion.touchUp(x: p.x, time: t)
+        applyOffset()
+        if motion.flinging { startLink() }
+    }
+
+    func stripCancel() { motion.touchCancel() }
+
+    /// 惯性往前走 dt 秒（显示链每一帧调；测试直接调）。返回 true = 还在走
+    @discardableResult
+    func stripStep(_ dt: TimeInterval) -> Bool {
+        let going = motion.step(dt: dt)
+        applyOffset()
+        return going
+    }
+
+    /// 测试用
+    var stripState: StripMotion { motion }
+
+    private func startLink() {
+        guard flingLink == nil else { return }
+        let l = CADisplayLink(target: LinkTarget(self), selector: #selector(LinkTarget.tick(_:)))
+        l.add(to: .main, forMode: .common)      // .common：别的手指在按键上按着时（跑在 tracking 模式）惯性也照走
+        lastTick = 0
+        flingLink = l
+    }
+
+    fileprivate func linkTick(_ l: CADisplayLink) {
+        let dt = lastTick == 0 ? l.duration : Swift.min(l.timestamp - lastTick, 0.05)
+        lastTick = l.timestamp
+        if !stripStep(dt) { stopLink() }
+    }
+
+    private func stopLink() {
+        flingLink?.invalidate()
+        flingLink = nil
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { stopLink() }
+    }
+
+    deinit { flingLink?.invalidate() }
+
     @objc private func pick(_ b: UIButton) { onPick?(b.tag) }
-    @objc private func pickNear(_ b: UIButton, event: UIEvent?) { if tapIsNear(b, event, scroll: scroll) { onPick?(b.tag) } }
+    @objc private func pickNear(_ b: UIButton, event: UIEvent?) { if tapIsNear(b, event, busy: motion.moving) { onPick?(b.tag) } }
     /// 点按落在候选之间的缝里 / 行两头的留空里：算到旁边最近那个候选（仿豆包 CandidateListView 对「点在 gap 里」的处理）
     @objc private func gapTapped(_ g: UITapGestureRecognizer) {
         guard g.state == .ended, let b = nearestCandidate(at: g.location(in: scroll)) else { return }
@@ -779,7 +1096,7 @@ extension CandidateBar: UIGestureRecognizerDelegate {
 }
 
 /// 九键左边的音节列表：打字时列出「下一个音节」可能是哪几个（ni / mi / o…），点一个就选定；可上下滑
-final class SyllableColumn: AxisScrollView, UIScrollViewDelegate {
+final class SyllableColumn: TouchFirstScroll, UIScrollViewDelegate {
     var onPick: ((Int) -> Void)?
     private var pool: [KeyButton] = []
     private var count = 0
@@ -791,7 +1108,6 @@ final class SyllableColumn: AxisScrollView, UIScrollViewDelegate {
         self.gap = gap
         self.maker = maker
         super.init(frame: .zero)
-        along = .vertical
         showsVerticalScrollIndicator = false
         delaysContentTouches = false          // 按下去立刻有反应，不等 0.15 秒
         accessibilityIdentifier = "syllables"
@@ -843,7 +1159,7 @@ final class SyllableColumn: AxisScrollView, UIScrollViewDelegate {
     }
 
     @objc private func tapped(_ b: UIButton) { onPick?(b.tag) }
-    @objc private func tappedNear(_ b: UIButton, event: UIEvent?) { if tapIsNear(b, event, scroll: self) { onPick?(b.tag) } }
+    @objc private func tappedNear(_ b: UIButton, event: UIEvent?) { if tapIsNear(b, event, busy: isTracking || isDragging || isDecelerating) { onPick?(b.tag) } }
 }
 
 /// 键盘设置面板（顶栏的齿轮打开，盖住按键区；内容多了可以上下滑）：按键震动开关、拼音键盘 26键 / 九键、记住我的用词、模糊音
@@ -986,14 +1302,13 @@ final class SettingsPanel: UIView {
 }
 
 /// 点候选栏的向下箭头展开：所有候选铺满键盘区（盖住按键），可上下滑，点一个就选它
-final class CandidatePanel: AxisScrollView {
+final class CandidatePanel: TouchFirstScroll {
     var onPick: ((Int) -> Void)?
     private var pool: [KeyButton] = []
     private var items: [String] = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        along = .vertical
         delaysContentTouches = false          // 按下去立刻有反应，不等 0.15 秒（以前没设：手指按在候选字上就滑不动，要在 0.15 秒内动起来才行）
         backgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.13, alpha: 1) : UIColor(white: 0.93, alpha: 1) }
         showsVerticalScrollIndicator = false
@@ -1041,7 +1356,7 @@ final class CandidatePanel: AxisScrollView {
     }
 
     @objc private func tapped(_ b: UIButton) { onPick?(b.tag) }
-    @objc private func tappedNear(_ b: UIButton, event: UIEvent?) { if tapIsNear(b, event, scroll: self) { onPick?(b.tag) } }
+    @objc private func tappedNear(_ b: UIButton, event: UIEvent?) { if tapIsNear(b, event, busy: isTracking || isDragging || isDecelerating) { onPick?(b.tag) } }
 }
 
 /// 语音键盘：语音听写（主 App 录音，这里收字）+ 中文拼音 / 英文 / 数字符号三套打字键盘。
@@ -1318,6 +1633,10 @@ final class KeyboardViewController: UIInputViewController {
     private var ctxTail = ""                 // 光标前已经打进输入框的最后一小段字（联想预测、按上文选词用）
     private var predictions: [String] = []   // 不拼字时的联想预测（接在上文最后一个词后面最可能的词 / 标点）
     private let keyArea = UIStackView()
+    private var rootStack: UIStackView!
+    private var rootLeading: NSLayoutConstraint!
+    private var rootTrailing: NSLayoutConstraint!
+    private var rootBottom: NSLayoutConstraint!
     private var letterKeys: [(KeyButton, String)] = []
     private var shiftKey: KeyButton?
     private var modeKey: KeyButton?
@@ -1448,6 +1767,9 @@ final class KeyboardViewController: UIInputViewController {
     static let bottomRowH: CGFloat = 42
     static let rowGap: CGFloat = 9
     static let colGap: CGFloat = 5
+    /// 键面四周比格子让出的留白（缝宽的一半）：看得见的缝 = 两个键面各让一半
+    static let colInset: CGFloat = colGap / 2
+    static let rowInset: CGFloat = rowGap / 2
     static let keyboardHeight: CGFloat = 2 + CandidateBar.height + 4 + 3 * letterRowH + 3 * rowGap + bottomRowH + 4
 
     private func build() {
@@ -1460,6 +1782,7 @@ final class KeyboardViewController: UIInputViewController {
         root.spacing = 4
         root.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(root)
+        rootStack = root
         // 按键区上面盖一块透明的触摸接线板（普通 UIView，不靠 UIStackView 收触摸）
         let pad = KeyboardRoot()
         pad.keyArea = keyArea
@@ -1474,17 +1797,18 @@ final class KeyboardViewController: UIInputViewController {
         NSLayoutConstraint.activate([
             pad.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             pad.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            pad.topAnchor.constraint(equalTo: keyArea.topAnchor, constant: -4),
+            pad.topAnchor.constraint(equalTo: candBar.bottomAnchor),      // 候选栏底边以下全是按键区（26 键下第一排的格子就从这里起）
             pad.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
         let h = view.heightAnchor.constraint(equalToConstant: Self.keyboardHeight)
         h.priority = .defaultHigh
+        rootLeading = root.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2)
+        rootTrailing = root.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -2)
+        rootBottom = root.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -4)
         NSLayoutConstraint.activate([
             h,
-            root.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2),
-            root.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -2),
+            rootLeading, rootTrailing, rootBottom,
             root.topAnchor.constraint(equalTo: view.topAnchor, constant: 2),
-            root.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -4),
         ])
         panel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(panel)
@@ -1613,7 +1937,7 @@ final class KeyboardViewController: UIInputViewController {
     private func hRow(_ views: [UIView], equal: Bool = false) -> UIStackView {
         let s = UIStackView(arrangedSubviews: views)
         s.axis = .horizontal
-        s.spacing = Self.colGap
+        s.spacing = tiled ? 0 : Self.colGap      // 26 键 / 数字页：格子之间一条缝都没有（缝是键面让出来的留白）
         s.distribution = equal ? .fillEqually : .fill
         return s
     }
@@ -1638,6 +1962,7 @@ final class KeyboardViewController: UIInputViewController {
         case .letters: buildLetters()
         case .numbers: buildNumbers()
         }
+        applyGridMode()
         rootView?.invalidateKeys()
         sizeRows()
         refreshReturn(force: true)
@@ -1647,15 +1972,37 @@ final class KeyboardViewController: UIInputViewController {
         refreshBar()
     }
 
+    /// 26 键 / 数字页的按键是「格子紧挨着铺满、键面留白当缝」（仿豆包：缝 4.5×9.5dp 只是格子里画出来的留白，点哪儿都落在某个键的格子里）；九键还是留真缝
+    private var tiled: Bool { !(layer == .letters && chinese && nine) }
+
+    private func applyGridMode() {
+        let t = tiled
+        rootStack.spacing = t ? 0 : 4
+        // 格子要把键面让出的那圈补回来：左右多伸半条缝，下面多伸半条行缝，键面的位置和以前一样
+        rootLeading.constant = t ? 2 - Self.colInset : 2
+        rootTrailing.constant = t ? -(2 - Self.colInset) : -2
+        rootBottom.constant = t ? Self.rowInset - 4.25 : -4
+        keyArea.spacing = t ? 0 : Self.rowGap
+        guard t else { return }
+        let inset = UIEdgeInsets(top: Self.rowInset, left: Self.colInset, bottom: Self.rowInset, right: Self.colInset)
+        func walk(_ v: UIView) {
+            for sub in v.subviews {
+                if let k = sub as? KeyButton { k.faceInset = inset } else if !(sub is UIScrollView) { walk(sub) }
+            }
+        }
+        walk(keyArea)
+    }
+
     /// 前三排（字母 / 数字符号）一样高、尽量大；最下面一排矮一点。底排的高度优先，空间不够时三排字母一起让
     private func sizeRows() {
         let rows = keyArea.arrangedSubviews
         guard rows.count == 4 else { return }
-        let first = rows[0].heightAnchor.constraint(equalToConstant: Self.letterRowH)
+        let extra = tiled ? Self.rowGap : 0      // 格子比键面高出一条缝
+        let first = rows[0].heightAnchor.constraint(equalToConstant: Self.letterRowH + extra)
         first.priority = UILayoutPriority(700)
         first.isActive = true
         for r in rows[1...2] { r.heightAnchor.constraint(equalTo: rows[0].heightAnchor).isActive = true }
-        let bottom = rows[3].heightAnchor.constraint(equalToConstant: Self.bottomRowH)
+        let bottom = rows[3].heightAnchor.constraint(equalToConstant: Self.bottomRowH + extra)
         bottom.priority = UILayoutPriority(999)
         bottom.isActive = true
     }
@@ -1729,8 +2076,8 @@ final class KeyboardViewController: UIInputViewController {
         hint.translatesAutoresizingMaskIntoConstraints = false
         k.addSubview(hint)
         NSLayoutConstraint.activate([
-            hint.topAnchor.constraint(equalTo: k.topAnchor, constant: 2),
-            hint.trailingAnchor.constraint(equalTo: k.trailingAnchor, constant: -3),
+            hint.topAnchor.constraint(equalTo: k.faceGuide.topAnchor, constant: 2),
+            hint.trailingAnchor.constraint(equalTo: k.faceGuide.trailingAnchor, constant: -3),
         ])
     }
 
@@ -1760,16 +2107,13 @@ final class KeyboardViewController: UIInputViewController {
         addBottomRow(first: "ABC", unit: digits[0]) { [weak self] in self?.switchLayer(.letters) }
     }
 
-    /// 最下面一排：[123/ABC] [🌐] [中/英] [空格（按住说话）] [换行]，直接加进 keyArea
+    /// 最下面一排：[123/ABC] [🌐] [中/英] [空格（按住说话）] [，。] [换行]，直接加进 keyArea
     private func addBottomRow(first: String, unit: UIView, _ firstAction: @escaping () -> Void) {
         var fixed: [(UIView, CGFloat)] = []       // （按键，宽度是字母键的几倍）
         var views: [UIView] = []
         let k1 = key(first, isFunction: true, font: 16, firstAction)
         views.append(k1)
         fixed.append((k1, 1.3))
-        let pk = makePunctKey()      // 123 旁边的「，。」合并键（仿豆包）
-        views.append(pk)
-        fixed.append((pk, 1.0))
         if needsInputModeSwitchKey {
             let g = makeGlobeKey()
             views.append(g)
@@ -1780,6 +2124,9 @@ final class KeyboardViewController: UIInputViewController {
         fixed.append((mode, 1.2))
         let space = makeSpaceKey()
         views.append(space)
+        let pk = makePunctKey()      // 空格右边的「，。」合并键（用户 10-26 要求放这里；以前在 123 旁边）
+        views.append(pk)
+        fixed.append((pk, 1.0))
         let ret = key(symbol: "return", isFunction: true) { [weak self] in self?.typeReturn() }
         ret.accessibilityIdentifier = "return"
         returnKey = ret
@@ -1813,8 +2160,8 @@ final class KeyboardViewController: UIInputViewController {
         hint.isUserInteractionEnabled = false
         k.addSubview(hint)
         NSLayoutConstraint.activate([
-            hint.topAnchor.constraint(equalTo: k.topAnchor, constant: 3),
-            hint.trailingAnchor.constraint(equalTo: k.trailingAnchor, constant: -5),
+            hint.topAnchor.constraint(equalTo: k.faceGuide.topAnchor, constant: 3),
+            hint.trailingAnchor.constraint(equalTo: k.faceGuide.trailingAnchor, constant: -5),
         ])
         k.addTarget(self, action: #selector(punctDown(_:)), for: .touchDown)
         k.addTarget(self, action: #selector(punctUp(_:)), for: [.touchUpInside, .touchUpOutside])
@@ -1876,10 +2223,10 @@ final class KeyboardViewController: UIInputViewController {
         glyph.translatesAutoresizingMaskIntoConstraints = false
         mode.addSubview(glyph)
         NSLayoutConstraint.activate([
-            glyph.leadingAnchor.constraint(equalTo: mode.leadingAnchor),
-            glyph.trailingAnchor.constraint(equalTo: mode.trailingAnchor),
-            glyph.topAnchor.constraint(equalTo: mode.topAnchor),
-            glyph.bottomAnchor.constraint(equalTo: mode.bottomAnchor),
+            glyph.leadingAnchor.constraint(equalTo: mode.faceGuide.leadingAnchor),
+            glyph.trailingAnchor.constraint(equalTo: mode.faceGuide.trailingAnchor),
+            glyph.topAnchor.constraint(equalTo: mode.faceGuide.topAnchor),
+            glyph.bottomAnchor.constraint(equalTo: mode.faceGuide.bottomAnchor),
         ])
         mode.accessibilityIdentifier = "mode"
         mode.accessibilityValue = chinese ? "中" : "英"
@@ -1897,10 +2244,10 @@ final class KeyboardViewController: UIInputViewController {
         sw.translatesAutoresizingMaskIntoConstraints = false
         space.addSubview(sw)
         NSLayoutConstraint.activate([
-            sw.leadingAnchor.constraint(equalTo: space.leadingAnchor, constant: 12),
-            sw.trailingAnchor.constraint(equalTo: space.trailingAnchor, constant: -12),
-            sw.topAnchor.constraint(equalTo: space.topAnchor, constant: 5),
-            sw.bottomAnchor.constraint(equalTo: space.bottomAnchor, constant: -5),
+            sw.leadingAnchor.constraint(equalTo: space.faceGuide.leadingAnchor, constant: 12),
+            sw.trailingAnchor.constraint(equalTo: space.faceGuide.trailingAnchor, constant: -12),
+            sw.topAnchor.constraint(equalTo: space.faceGuide.topAnchor, constant: 5),
+            sw.bottomAnchor.constraint(equalTo: space.faceGuide.bottomAnchor, constant: -5),
         ])
         spaceWave = sw
         // 「空格」两个字上移一点，下面一行小字提示（仿豆包）；按住说话时声波盖住它们
@@ -1914,8 +2261,8 @@ final class KeyboardViewController: UIInputViewController {
         hint.translatesAutoresizingMaskIntoConstraints = false
         space.addSubview(hint)
         NSLayoutConstraint.activate([
-            hint.centerXAnchor.constraint(equalTo: space.centerXAnchor),
-            hint.bottomAnchor.constraint(equalTo: space.bottomAnchor, constant: -3),
+            hint.centerXAnchor.constraint(equalTo: space.faceGuide.centerXAnchor),
+            hint.bottomAnchor.constraint(equalTo: space.faceGuide.bottomAnchor, constant: -3),
         ])
         spaceHint = hint
         space.onDrag = { [weak self] dx, dy in self?.spaceDrag(dx, dy) ?? false }
