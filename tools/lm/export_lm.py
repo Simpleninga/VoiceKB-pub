@@ -30,7 +30,8 @@ MINT = int(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--mint=")
 DELTA = float(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--delta=")), 0.2))
 TSCALE = float(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--tscale=")), 1.0))      # 三元计数只数了部分语料时，乘上这个倍数和二元对齐（试验用）
 K3_MIN, K3_PER = 10.0, 3.0
-K_MIN, K_PER_FOLLOWER = 20.0, 5.0
+K_MIN = 20.0
+K_PER_FOLLOWER = float(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--k=")), 5.0))      # 5.0 = 线上；试验时可调
 PUNCT_SCALE = 0.35
 SHIFT = 17
 U = 2048
@@ -102,13 +103,19 @@ P = len(bs)
 ctx, tranges, tbacks, tw, tcosts = [], [0], [], [], []
 if TRI:
     tm = pickle.load(open(TRI, "rb"))
-    assert tm["vocab"] == vocab, "三元计数的词表和二元计数的不一致"
     MASK = (1 << SHIFT) - 1
+    # 三元计数的词表和二元计数的不一致时按词翻译 id（词表里没有的三元丢掉）
+    tr = None if tm["vocab"] == vocab else {i: oldid.get(w) for i, w in enumerate(tm["vocab"])}
     by_ctx = {}
     for k, c in tm["cnt"].items():
         if c < MINT:
             continue
-        a, b, w = newid[k >> (2 * SHIFT)], newid[(k >> SHIFT) & MASK], newid[k & MASK]
+        a0, b0, w0 = k >> (2 * SHIFT), (k >> SHIFT) & MASK, k & MASK
+        if tr is not None:
+            a0, b0, w0 = tr.get(a0), tr.get(b0), tr.get(w0)
+            if a0 is None or b0 is None or w0 is None:
+                continue
+        a, b, w = newid[a0], newid[b0], newid[w0]
         if (a, b) in pidx:
             by_ctx.setdefault((a, b), []).append((w, c * TSCALE))
     kept = dropped = 0

@@ -51,7 +51,8 @@ final class PadButton: UIButton {
 /// 候选 / 音节这类「在滑动区里、松手才算点」的按钮：松手时手指稍微滑出了按钮边（但没在滑动列表）也算点到。
 /// 以前只认 touchUpInside，手指一滑出边（手指带一点滑动是常态）这一下就丢了，用户感觉「滑的时候经常没反应」
 func tapIsNear(_ b: UIView, _ event: UIEvent?, scroll: UIScrollView?) -> Bool {
-    if let s = scroll, s.isDragging || s.isDecelerating { return false }
+    // isTracking 也要挡（仿豆包的 touchSlop 判定）：手指已经按进滑动区开始拖，只是系统还没判成拖动，这时松手不该算点选
+    if let s = scroll, s.isTracking || s.isDragging || s.isDecelerating { return false }
     guard let p = event?.allTouches?.first?.location(in: b) else { return false }
     return b.bounds.insetBy(dx: -14, dy: -20).contains(p)
 }
@@ -387,6 +388,14 @@ final class WaveView: UIView {
     }
 }
 
+/// 候选横滑区（仿豆包 CandidateListView 那套触摸规则）：
+/// ① 在候选字上按下也能直接拖：滑动一开始就取消按钮的点按，不用等、也不丢；
+/// ② 点在两个候选之间 2pt 的缝里、还有行两头的留空里不会落空：算点到附近那个候选（感知交给 CandidateBar 的 tap 手势）。
+final class CandidateScroll: UIScrollView {
+    /// 从候选字上起手也照滑不误
+    override func touchesShouldCancel(in view: UIView) -> Bool { true }
+}
+
 /// 键盘上方的一条（高 58）：打字时 = 上一行拼音（右边有展开箭头）+ 下一行候选字（可横滑，第一个绿色）；
 /// 不打字时 = 左边小圆形麦克风按钮、中间语音状态文字 / 声波、右边一个向下的小箭头（点一下收起键盘；刚听写完在它左边多一个「撤销」）。
 /// 打字时麦克风和收起箭头让位，候选能用满整条。
@@ -398,7 +407,7 @@ final class CandidateBar: UIView {
     private let wave = WaveView()
     private let compLabel = UILabel()
     private let expand = PadButton(type: .custom)
-    private let scroll = UIScrollView()
+    private let scroll = CandidateScroll()
     private let stack = UIStackView()
     private let undo = PadButton(type: .custom)
     private let hide = KeyButton(type: .custom)         // 不打字时最右边的白色圆形按钮（向下箭头）：收起键盘
@@ -430,6 +439,11 @@ final class CandidateBar: UIView {
         expand.pad = UIEdgeInsets(top: 4, left: 14, bottom: 8, right: 8)      // 展开箭头原来只有 36×26，手指一偏就按不到
         expand.addTarget(self, action: #selector(expandTapped), for: .touchUpInside)
         scroll.delaysContentTouches = false          // 候选字按下去立刻有反应，不等 0.15 秒
+        scroll.contentInsetAdjustmentBehavior = .never   // 键盘里没有安全区可让，别给横滑起点掺水分
+        let gapTap = UITapGestureRecognizer(target: self, action: #selector(gapTapped(_:)))
+        gapTap.cancelsTouchesInView = false          // 只是补「缝里点按落空」的空档，别影响按钮和滑动
+        gapTap.delegate = self
+        scroll.addGestureRecognizer(gapTap)
         setExpanded(false)
         stack.axis = .horizontal
         stack.spacing = 2
@@ -617,6 +631,7 @@ final class CandidateBar: UIView {
 
     private func fill(comp: String, items: [String], first: Bool) {
         if comp == shownComp, items == shownItems, first == shownFirst, !pool.isEmpty { return }   // 没变就不重画（重画会把横滑位置和正在按的候选搞丢）
+        let keepPlace = comp == shownComp && first == shownFirst && !pool.isEmpty   // 同一串拼音的候选只是补全（后台引擎 / 个人学习又算出来新词）：横滑位置不动
         shownComp = comp
         shownItems = items
         shownFirst = first
@@ -638,13 +653,39 @@ final class CandidateBar: UIView {
             b.setTitleColor(first && i == 0 ? Brand.green : .label, for: .normal)     // 第一个（按空格会选的）用绿色
             b.isHidden = i >= items.count
         }
-        scroll.setContentOffset(CGPoint(x: -scroll.contentInset.left, y: 0), animated: false)
+        if keepPlace {
+            // 仿豆包 updatePinyinOnly：正滑着的时候列表更新不拉回最前面，只把位置夹在新的合法范围里
+            stack.setNeedsLayout()
+            scroll.layoutIfNeeded()
+            let minO = -scroll.contentInset.left
+            let maxO = max(minO, scroll.contentSize.width - scroll.bounds.width)
+            let x = min(max(scroll.contentOffset.x, minO), maxO)
+            scroll.setContentOffset(CGPoint(x: x, y: 0), animated: false)
+        } else {
+            scroll.setContentOffset(CGPoint(x: -scroll.contentInset.left, y: 0), animated: false)
+        }
     }
-
     func showUndo(_ on: Bool) { undo.isHidden = !on }
 
     @objc private func pick(_ b: UIButton) { onPick?(b.tag) }
     @objc private func pickNear(_ b: UIButton, event: UIEvent?) { if tapIsNear(b, event, scroll: scroll) { onPick?(b.tag) } }
+    /// 点按落在候选之间的缝里 / 行两头的留空里：算到旁边最近那个候选（仿豆包 CandidateListView 对「点在 gap 里」的处理）
+    @objc private func gapTapped(_ g: UITapGestureRecognizer) {
+        guard g.state == .ended, let b = nearestCandidate(at: g.location(in: scroll)) else { return }
+        pick(b)
+    }
+    /// scroll 坐标系里离 x 最近、又离得不算远的候选（候选按钮框往两边各让 3pt，把 2pt 的缝隙盖掉）
+    private func nearestCandidate(at p: CGPoint) -> UIButton? {
+        var best: (UIButton, CGFloat)?
+        for b in pool where !b.isHidden {
+            let f = stack.convert(b.frame, to: scroll)
+            if p.y < f.minY - 2 || p.y > f.maxY + 2 { continue }
+            let d = max(f.minX - p.x, p.x - f.maxX, 0)
+            if d <= 3, best == nil || d < best!.1 { best = (b, d) }
+            if best != nil, best!.1 == 0 { break }
+        }
+        return best?.0
+    }
     @objc private func undoTapped() { onUndo?() }
     @objc private func micTapped() { onMic?() }
     @objc private func expandTapped() { onExpand?() }
@@ -653,8 +694,15 @@ final class CandidateBar: UIView {
     @objc private func xmarkTapped() { onXmark?() }
 }
 
+extension CandidateBar: UIGestureRecognizerDelegate {
+    /// 手指摸在候选字上交给按钮自己；只有点在缝里 / 留空区才来这里
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        !(touch.view is UIControl)
+    }
+}
+
 /// 九键左边的音节列表：打字时列出「下一个音节」可能是哪几个（ni / mi / o…），点一个就选定；可上下滑
-final class SyllableColumn: UIScrollView {
+final class SyllableColumn: UIScrollView, UIScrollViewDelegate {
     var onPick: ((Int) -> Void)?
     private var pool: [KeyButton] = []
     private var count = 0
@@ -670,6 +718,7 @@ final class SyllableColumn: UIScrollView {
         delaysContentTouches = false          // 按下去立刻有反应，不等 0.15 秒
         accessibilityIdentifier = "syllables"
         isHidden = true
+        delegate = self      // 自己给自己的 delegate：滚动结束好把记着的「归零」补上
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) 不用") }
@@ -688,8 +737,27 @@ final class SyllableColumn: UIScrollView {
             b.setTitle(i < new.count ? new[i] : nil, for: .normal)
             b.isHidden = i >= new.count
         }
-        setContentOffset(.zero, animated: false)
+        if isTracking || isDragging || isDecelerating {     // 手指还按在列表上：别把路线从脚下抽走（等回到 idle 再归零）
+            pendingZero = true
+        } else {
+            pendingZero = false
+            setContentOffset(.zero, animated: false)
+        }
         setNeedsLayout()
+    }
+
+    /// 列表正被手指跟踪时的「归零」先记着，等滚动停下来再补
+    private var pendingZero = false
+
+    override func touchesShouldCancel(in view: UIView) -> Bool { true }      // 在音节字上按下也能直接滑
+
+    func scrollViewDidEndDecelerating(_ sv: UIScrollView) { settleIfIdle() }
+    func scrollViewDidEndDragging(_ sv: UIScrollView, willDecelerate: Bool) { if !willDecelerate { settleIfIdle() } }
+
+    private func settleIfIdle() {
+        guard pendingZero, !(isTracking || isDragging || isDecelerating) else { return }
+        pendingZero = false
+        setContentOffset(.zero, animated: false)
     }
 
     override func layoutSubviews() {
