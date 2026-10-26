@@ -396,6 +396,18 @@ final class CandidateScroll: UIScrollView {
     override func touchesShouldCancel(in view: UIView) -> Bool { true }
 }
 
+extension CandidateBar {
+    /// 豆包 areacontrol（InputViewRoot 的 IdleTouchForward / 合成事件转发）的等价做法：起手落在顶栏任何非按钮的位置
+    /// （拼音行、状态字、候选行上下的空处）都原样交给候选横滑区 — 滑动从哪起手都行，不必瞄着那一行。
+    /// 横向拖动由 UIScrollView 原生接管（带惯性）；静止的点按落点在候选行外面时，gapTapped 的 y 判定会自然不选词。
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        if hit is UIControl || hit == nil && !bounds.contains(point) || scroll.isHidden { return hit }
+        return scroll
+    }
+}
+
+
 /// 键盘上方的一条（高 58）：打字时 = 上一行拼音（右边有展开箭头）+ 下一行候选字（可横滑，第一个绿色）；
 /// 不打字时 = 左边小圆形麦克风按钮、中间语音状态文字 / 声波、右边一个向下的小箭头（点一下收起键盘；刚听写完在它左边多一个「撤销」）。
 /// 打字时麦克风和收起箭头让位，候选能用满整条。
