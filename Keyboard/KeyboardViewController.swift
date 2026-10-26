@@ -1815,7 +1815,25 @@ final class KeyboardViewController: UIInputViewController {
     static let rowInset: CGFloat = rowGap / 2
     static let keyboardHeight: CGFloat = 2 + CandidateBar.height + 4 + 3 * letterRowH + 3 * rowGap + bottomRowH + 4
 
+    /// 垫在所有东西最底下、贴满整个键盘的一层极淡的底。真机上键盘扩展里**完全透明的像素收不到触摸**——系统在把触摸送进键盘进程之前就丢了，
+    /// 连 hitTest 都不会被调到（苹果开发者论坛 thread/702798 同一个现象）：键面之间的缝、顶栏的空白处都是透明的，手指落在那里就是「点了没反应」。
+    /// 铺上这一层，每个像素都不再全透明，触摸才会送进来，再由接线板归到最近的键。颜色几乎看不出来（亮色模式微亮、深色模式微暗）
+    static let touchFloorColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0, alpha: 0.08) : UIColor(white: 1, alpha: 0.08) }
+    private(set) var touchFloor: UIView?
+
     private func build() {
+        let floor = UIView()
+        floor.backgroundColor = Self.touchFloorColor
+        floor.isUserInteractionEnabled = false
+        floor.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(floor)
+        NSLayoutConstraint.activate([
+            floor.topAnchor.constraint(equalTo: view.topAnchor),
+            floor.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            floor.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            floor.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
+        touchFloor = floor
         candBar.heightAnchor.constraint(equalToConstant: CandidateBar.height).isActive = true
         keyArea.axis = .vertical
         keyArea.spacing = Self.rowGap

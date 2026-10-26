@@ -1466,6 +1466,23 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertTrue(r.stats.summary.contains("屏幕边缘1"), r.stats.summary)
     }
 
+    /// 真机上完全透明的像素收不到触摸（系统在送进键盘进程之前就丢了，模拟器和直接调接线板的测试看不出来；10-26 用户「键缝 / 三个键交界处点了没反应」的真正原因）：
+    /// 我们自己的内容最底下必须有一层贴满整个键盘、不是全透明的底
+    func testKeyboardHasNoFullyTransparentPixels() throws {
+        let vc = makeKeyboard()
+        let floor = try XCTUnwrap(vc.touchFloor, "没有垫底层")
+        XCTAssertTrue(floor.superview === vc.view)
+        XCTAssertEqual(floor.frame, vc.view.bounds, "垫底层要贴满整个键盘")
+        var a: CGFloat = 0
+        XCTAssertTrue(floor.backgroundColor?.resolvedColor(with: vc.traitCollection).getWhite(nil, alpha: &a) ?? false)
+        XCTAssertGreaterThanOrEqual(a, 0.05, "底太淡可能还是被系统当透明")
+        XCTAssertLessThanOrEqual(a, 0.15, "底太浓会改变键盘的样子")
+        let pad = try XCTUnwrap(vc.router)
+        let padAt = try XCTUnwrap(vc.view.subviews.firstIndex(of: pad))
+        let floorAt = try XCTUnwrap(vc.view.subviews.firstIndex(of: floor))
+        XCTAssertGreaterThan(padAt, floorAt, "按键区的接线板要在垫底层上面")
+    }
+
     /// 整条链路扫一遍（用户 10-26 反复说「三个键交界处点了没反应」）：每个格子的四个角周围 ±2pt 九个点，真的「按下 → 抬起」一遍——
     /// UIKit 的 hitTest 必须把触摸交给接线板；归到字母键的，拼音串必须多一个字母；归到别的键的也必须有键
     func testTappingCellCornersAlwaysTypes() throws {
