@@ -58,6 +58,9 @@ final class KeyButton: UIButton {
             // 底色、圆角、阴影从按键本身挪到键面上
             let f = UIView()
             f.isUserInteractionEnabled = false
+            // 垫在所有子视图下面：UIButton 的图标 / 文字什么时候加进来、加在第几层都不归我们管，靠子视图顺序压不住
+            // （1.77 里 shift / 删除键只有灰块没有图标，就是图标层在键面下面；回车键每次刷新都重摆图标所以没事）
+            f.layer.zPosition = -1
             f.backgroundColor = backgroundColor
             f.layer.cornerRadius = layer.cornerRadius
             f.layer.shadowColor = layer.shadowColor
@@ -151,6 +154,15 @@ final class KeyboardRoot: UIView {
     /// 动态热区：某个键现在「更可能是下一个要按的」，在两个键的交界处让它多占几个点（单位 pt，可正可负）
     var letterBias: ((KeyButton) -> CGFloat)?
     private(set) var stats = TouchStats()
+    /// 最近的触摸流水（真机上「点了没反应」时看：每根手指落在哪、归哪个键、抬起时怎么处理的），键盘收起时随触摸统计一起补报
+    private(set) var trace: [String] = []
+    /// UIKit 实际送到接线板的触摸次数：按下 / 抬起 / 被取消
+    private(set) var raw = (began: 0, ended: 0, cancelled: 0)
+    private func note(_ s: String) {
+        trace.append(s)
+        if trace.count > 16 { trace.removeFirst(trace.count - 16) }
+    }
+    private static func label(_ k: KeyButton) -> String { k.accessibilityIdentifier ?? k.currentTitle ?? "?" }
 
     /// 往上滑超过这么多、而且竖向为主，就锁在这个键上「上滑打数字」；回落到不足 swipeUnlockDistance、或拐成横滑才解锁
     static let swipeUpDistance: CGFloat = 12
@@ -167,7 +179,11 @@ final class KeyboardRoot: UIView {
     private var fingers: [AnyHashable: Finger] = [:]
     private var cached: [KeyButton]?
 
-    func resetStats() { stats = TouchStats() }
+    func resetStats() {
+        stats = TouchStats()
+        trace = []
+        raw = (0, 0, 0)
+    }
 
     /// 重排以后按键换了一批
     func invalidateKeys() { cached = nil }
@@ -243,6 +259,7 @@ final class KeyboardRoot: UIView {
     // MARK: 触摸（UIKit 的触摸回调只是把手指的位置转给下面几个入口；测试直接调这几个入口，不用造真的 UITouch）
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        raw.began += touches.count
         for t in touches { fingerDown(ObjectIdentifier(t), at: t.location(in: self), time: t.timestamp) }
     }
 
@@ -251,10 +268,12 @@ final class KeyboardRoot: UIView {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        raw.ended += touches.count
         for t in touches { fingerUp(ObjectIdentifier(t), at: t.location(in: self), time: t.timestamp, cancelled: false) }
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        raw.cancelled += touches.count
         for t in touches { fingerUp(ObjectIdentifier(t), at: t.location(in: self), time: t.timestamp, cancelled: true) }
     }
 
@@ -266,7 +285,12 @@ final class KeyboardRoot: UIView {
             stats.lateMax = max(stats.lateMax, ms)
         }
         if p.x < 14 || p.x > bounds.width - 14 { stats.edge += 1 }
-        guard let best = nearest(to: p), best.score > -30 else { stats.miss += 1; return }
+        guard let best = nearest(to: p), best.score > -30 else {
+            stats.miss += 1
+            note("↓(\(Int(p.x)),\(Int(p.y)))没按到键")
+            return
+        }
+        note("↓(\(Int(p.x)),\(Int(p.y)))→\(Self.label(best.key)) \(String(format: "%.1f", best.score))")
         if !best.key.convert(best.key.bounds, to: self).insetBy(dx: -1, dy: -1).contains(p) { stats.gap += 1 }      // 不在任何格子里（九键键间的真缝）
         fingers[id] = Finger(key: best.key, start: p, t0: time)
         let k = best.key
@@ -311,8 +335,9 @@ final class KeyboardRoot: UIView {
     }
 
     func fingerUp(_ id: AnyHashable, at p: CGPoint, time: TimeInterval, cancelled: Bool) {
-        guard let f = fingers.removeValue(forKey: id) else { return }
+        guard let f = fingers.removeValue(forKey: id) else { note("↑没有对应的按下"); return }
         let k = f.key
+        note("↑\(Self.label(k)) " + (cancelled ? "系统取消" : f.far ? "拖远" : f.up ? "上滑" : f.dragged ? "拖动" : "抬起"))
         k.touchHeld = false
         k.isHighlighted = false
         k.dragDelta = CGPoint(x: p.x - f.start.x, y: p.y - f.start.y)
@@ -1364,6 +1389,19 @@ final class CandidatePanel: TouchFirstScroll {
 /// 键盘的根视图：声明「我这里可以放按键点击声」，UIDevice.playInputClick() 才会响（跟随系统设置里的「键盘反馈 → 声音」）
 final class ClickInputView: UIInputView, UIInputViewAudioFeedback {
     var enableInputClicksWhenVisible: Bool { true }
+
+    /// 每根新手指最先落在哪个视图上（hitTest 每根新手指只走一次）：真机上「点了没反应」时，一眼看出触点有没有到接线板
+    private(set) var landings: [String] = []
+    func resetLandings() { landings = [] }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let v = super.hitTest(point, with: event)
+        if event?.type == .touches {
+            landings.append("(\(Int(point.x)),\(Int(point.y)))→" + (v.map { String(describing: type(of: $0)) } ?? "无"))
+            if landings.count > 14 { landings.removeFirst(landings.count - 14) }
+        }
+        return v
+    }
 }
 
 /// 中 / 英 切换键上的图案（仿豆包输入法）：「中」在左上、「英」在右下，各带一个弯箭头；当前的那个绿色加粗放大，另一个灰色缩小
@@ -1737,7 +1775,12 @@ final class KeyboardViewController: UIInputViewController {
         if userSave != nil { saveUser() }      // 键盘收起：没来得及存的学习记录马上存（扩展随时可能被系统结束）
         if let r = rootView {
             r.cancelAll()
-            if r.stats.down >= 20 { qlog("触摸统计 " + r.stats.summary) }      // 看「按了没反应」是哪一种：没按到键 / 被系统取消 / 滑过去改
+            // 看「按了没反应」是哪一种：没按到键 / 被系统取消 / 滑过去改 / 根本没送到接线板（触点流水里没有它）
+            if r.stats.down >= 3 {
+                let landed = (view as? ClickInputView)?.landings ?? []
+                qlog("触摸统计 " + r.stats.summary + " 原始触摸\(r.raw.began)/\(r.raw.ended)/\(r.raw.cancelled) ｜接线板流水 " + r.trace.joined(separator: " ") + " ｜触点落在 " + landed.joined(separator: " "))
+            }
+            (view as? ClickInputView)?.resetLandings()
             r.resetStats()
         }
         visible = false

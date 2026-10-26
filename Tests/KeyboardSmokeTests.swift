@@ -1465,4 +1465,73 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertEqual(r.stats.miss, 0)
         XCTAssertTrue(r.stats.summary.contains("屏幕边缘1"), r.stats.summary)
     }
+
+    /// 整条链路扫一遍（用户 10-26 反复说「三个键交界处点了没反应」）：每个格子的四个角周围 ±2pt 九个点，真的「按下 → 抬起」一遍——
+    /// UIKit 的 hitTest 必须把触摸交给接线板；归到字母键的，拼音串必须多一个字母；归到别的键的也必须有键
+    func testTappingCellCornersAlwaysTypes() throws {
+        var vc = makeKeyboard()
+        var r = try XCTUnwrap(vc.router)
+        var seen = Set<String>()
+        var points: [CGPoint] = []
+        for k in keys(vc) where k.routed && !k.isHidden {
+            let f = k.convert(k.bounds, to: r)
+            for cx in [f.minX, f.maxX] {
+                for cy in [f.minY, f.maxY] {
+                    for dx in [-2.0, 0.0, 2.0] {
+                        for dy in [-2.0, 0.0, 2.0] {
+                            let p = CGPoint(x: min(max(cx + CGFloat(dx), 0.5), r.bounds.width - 0.5), y: min(max(cy + CGFloat(dy), 0.5), r.bounds.height - 0.5))
+                            if seen.insert("\(Int(p.x * 2))/\(Int(p.y * 2))").inserted { points.append(p) }
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertGreaterThan(points.count, 300, "采样点要覆盖所有交界处：\(points.count)")
+        var failures: [String] = []
+        var typedHere = 0, letterTaps = 0, otherKeys = 0
+        for p in points {
+            let hit = vc.view.hitTest(r.convert(p, to: vc.view), with: nil)
+            if hit !== r { failures.append("\(p) hitTest 没交给接线板：\(String(describing: hit))"); continue }
+            guard let k = r.key(at: p) else { failures.append("\(p) 没有键"); continue }
+            guard k.commitsOnRelease, k.swipeUp != nil else { otherKeys += 1; continue }      // 功能键（shift / 删除 / 123…）按了会改状态，这里只确认有键
+            let before = vc.buffer.count
+            r.fingerDown(1, at: p, time: 0)
+            r.fingerUp(1, at: p, time: 0.05, cancelled: false)
+            if vc.buffer.count != before + 1 { failures.append("\(p) 点了「\(k.currentTitle ?? "?")」拼音串没多一个字母（\(before)→\(vc.buffer.count)）") }
+            letterTaps += 1
+            typedHere += 1
+            if typedHere >= 30 {      // 拼音串有长度上限，换一个新键盘继续
+                vc = makeKeyboard()
+                r = try XCTUnwrap(vc.router)
+                typedHere = 0
+            }
+        }
+        XCTAssertGreaterThan(letterTaps, 150)
+        XCTAssertTrue(failures.isEmpty, "这些点按了没反应（\(failures.count) 个，字母键 \(letterTaps) 次、别的键 \(otherKeys) 个点）：\(failures.prefix(8))")
+    }
+
+    /// 键面（看得见的那块）垫在最底下：shift / 删除这类只有图标的键，图标不能被键面盖住（1.77 的回归：只剩灰块没有箭头）
+    func testKeyFaceSitsBehindIcons() throws {
+        let vc = makeKeyboard()
+        for id in ["delete", "shift", "return"] {
+            let k = try keyNamed(vc, id: id)
+            XCTAssertNotNil(k.currentImage, "\(id) 键要有图标")
+            XCTAssertEqual(k.subviews.filter { $0.layer.zPosition < 0 }.count, 1, "\(id) 键面垫在最底层")
+            if let iv = k.imageView { XCTAssertGreaterThanOrEqual(iv.layer.zPosition, 0, "\(id) 图标不在键面下面") }
+        }
+    }
+
+    /// 触摸流水：每次按下 / 抬起都留一条，真机日志里能还原每一下
+    func testTouchTraceRecordsEachPress() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        let q = try keyNamed(vc, "q")
+        r.fingerDown(1, at: center(q, in: r), time: 0)
+        r.fingerUp(1, at: center(q, in: r), time: 0.05, cancelled: false)
+        XCTAssertEqual(r.trace.count, 2)
+        XCTAssertTrue(r.trace.first?.hasPrefix("↓") == true && r.trace.first?.contains("→q") == true, "\(r.trace)")
+        XCTAssertTrue(r.trace.last?.contains("抬起") == true, "\(r.trace)")
+        r.resetStats()
+        XCTAssertTrue(r.trace.isEmpty)
+    }
 }
