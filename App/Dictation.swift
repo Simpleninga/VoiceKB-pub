@@ -57,7 +57,7 @@ final class Dictation: ObservableObject {
     @Published var logLines: [String] = []
     @Published var swipeBackHint = false     // 没法自动跳回时，提示用户手动划回去
 
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private let sink = TapSink()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
     private var request: SFSpeechAudioBufferRecognitionRequest?
@@ -174,8 +174,18 @@ final class Dictation: ObservableObject {
         try s.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .allowBluetoothA2DP])
         try s.setActive(true)
         if let mic = s.availableInputs?.first(where: { $0.portType == .builtInMic }) { try? s.setPreferredInput(mic) }
-        let input = engine.inputNode
-        let fmt = input.outputFormat(forBus: 0)
+        var input = engine.inputNode
+        var fmt = input.outputFormat(forBus: 0)
+        if fmt.sampleRate <= 0 || fmt.channelCount == 0 {
+            // 这个引擎的输入格式卡在 0 Hz 不再更新（10-27 戴耳机后，同一个引擎重试十几分钟、隔几个小时都读到 0）：换一个全新的引擎对象再读一次。
+            // 换完还是 0 就是系统真没给输入，路由和可用输入写进日志，下次一眼看出是耳机还是别的 App 占着
+            input.removeTap(onBus: 0)
+            engine = AVAudioEngine()
+            input = engine.inputNode
+            fmt = input.outputFormat(forBus: 0)
+            let avail = s.availableInputs?.map { $0.portType.rawValue }.joined(separator: "+") ?? "无"
+            log("麦克风格式 0 Hz，换了新引擎：现在 \(Int(fmt.sampleRate)) Hz \(fmt.channelCount) 声道；\(routeText())；可用输入 \(avail)；系统说有输入=\(s.isInputAvailable)")
+        }
         // 切换音频设备的瞬间格式可能是 0 Hz / 0 声道，这时 installTap 会直接抛 ObjC 异常把 App 弄崩，先挡住，交给 heal() 稍后重试
         guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
             throw NSError(domain: "VoiceKB", code: 1, userInfo: [NSLocalizedDescriptionKey: "麦克风格式还没就绪（\(fmt.sampleRate) Hz，\(fmt.channelCount) 声道）"])
