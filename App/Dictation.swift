@@ -78,6 +78,9 @@ final class Dictation: ObservableObject {
     private var resultText = ""
     private var resultSID = 0                // resultText 是第几次录音的（键盘靠它认出这条结果是不是它亲眼看着的那次录音）
     private var lastHeal = Date.distantPast
+    private var lastVerify = Date.distantPast
+    private var ctxBefore = ""               // 开始说话时输入框里光标前的字（键盘给的）：只交给润色当语境，用一次就清
+    private var altHints: [String] = []      // 识别器对没把握的词给的别的写法（「词→候选/候选」）：交给润色，让它按语境选
     private var rseq = 0
     private var rtime: TimeInterval = 0
     private var errText = ""
@@ -89,7 +92,8 @@ final class Dictation: ObservableObject {
     private var autoStop: Timer?
 
     private var keepMin: Int { UserDefaults.standard.object(forKey: "keepMin") as? Int ?? 30 }   // -1 一直开，0 关闭
-    private var onDevicePref: Bool { UserDefaults.standard.object(forKey: "onDevice") as? Bool ?? true }
+    // 默认走苹果云端识别：本机模型对生僻词、古文、专名明显更弱（10-28 「璧礼天琮礼地」被听成「伊犁天从你弟」）；设置里还能改回只用本机
+    private var onDevicePref: Bool { UserDefaults.standard.object(forKey: "onDevice") as? Bool ?? false }
     private var polishOn: Bool { UserDefaults.standard.object(forKey: "polish") as? Bool ?? true }
     private var style: String { UserDefaults.standard.string(forKey: "style") ?? "light" }
     private var serviceReady: Bool { !Server.key.isEmpty }      // 安装包里有服务密钥才能润色 / 传日志
@@ -114,6 +118,7 @@ final class Dictation: ObservableObject {
             Task { @MainActor in self?.interruption(type) }
         }
         refreshPerms()
+        refreshHot()
         publish()
     }
 
@@ -141,6 +146,26 @@ final class Dictation: ObservableObject {
         micOK = AVAudioApplication.shared.recordPermission == .granted
         speechOK = SFSpeechRecognizer.authorizationStatus() == .authorized
         onDeviceOK = recognizer?.supportsOnDeviceRecognition ?? false
+    }
+
+    /// 取服务器上的常用词表存下来，识别时当提示；取不到就沿用上次的
+    func refreshHot() {
+        guard serviceReady else { return }
+        Task {
+            if let r = try? await Server.call("GET", "/kb/v1/hot", timeout: 6), let w = r["words"] as? [String], !w.isEmpty {
+                UserDefaults.standard.set(w, forKey: "serverHot")
+            }
+        }
+    }
+
+    /// 给识别器的提示词：服务器的常用词表 + 键盘里我用得最多的词（最近一次说话时键盘带来的），去重，最多 100 个
+    private func hotwords() -> [String] {
+        let d = UserDefaults.standard
+        var seen = Set<String>(), out: [String] = []
+        for w in (d.stringArray(forKey: "serverHot") ?? []) + (d.stringArray(forKey: "kbHot") ?? []) where !w.isEmpty && seen.insert(w).inserted {
+            out.append(w)
+        }
+        return Array(out.prefix(100))
     }
 
     func ensurePermissions() async -> Bool {
@@ -247,6 +272,12 @@ final class Dictation: ObservableObject {
             stopEngine()
             return
         }
+        if Date().timeIntervalSince(lastVerify) >= 5 {      // 键盘靠本机通道找我：它悄悄坏了要尽快发现、重建
+            lastVerify = Date()
+            Bridge.shared.verify { [weak self] ok in
+                if !ok { Task { @MainActor in self?.log("本机通道不通（键盘会连不上我），已重建监听") } }
+            }
+        }
         heal()
     }
 
@@ -280,6 +311,11 @@ final class Dictation: ObservableObject {
             log("宿主进程 \(pid)：路径 \(r)；进程名 \(n)")
             if r.hasPrefix("/") { path = r }
             if !n.hasPrefix("读不到") { name = n }
+        }
+        ctxBefore = q.first { $0.name == "ctx" }?.value ?? ""
+        lastVerify = Date()
+        Bridge.shared.verify { [weak self] ok in      // 键盘约 1.6 秒后会来连本机通道：先确认它是通的，不通立刻重建
+            if !ok { Task { @MainActor in self?.log("本机通道不通（键盘会连不上我），已重建监听") } }
         }
         startRecording()
         returnToHost(host, path: path, name: name)
@@ -356,7 +392,11 @@ final class Dictation: ObservableObject {
         guard seq > lastCmdSeq else { return }
         lastCmdSeq = seq
         switch k["cmd"] as? String ?? "" {
-        case "start": log("键盘：开始"); startRecording()
+        case "start":
+            log("键盘：开始")
+            ctxBefore = k["ctx"] as? String ?? ""
+            if let h = k["hot"] as? [String], !h.isEmpty { UserDefaults.standard.set(Array(h.prefix(60)), forKey: "kbHot") }
+            startRecording()
         case "stop": log("键盘：停止（\(k["src"] as? String ?? "?")）"); stopRecording()
         case "cut": cut(upTo: k["n"] as? Int ?? 0, count: k["k"] as? Int)
         case "cancel": log("键盘：换了输入框，这次录音作废（\(k["src"] as? String ?? "?")）"); cancelRecording()
@@ -417,6 +457,7 @@ final class Dictation: ObservableObject {
         cutBase = 0
         cutCount = 0
         resultCuts = 0
+        altHints = []
         Hub.shared.clearLevels()
         quickRestarts = 0
         startTask(recognizer)
@@ -441,6 +482,9 @@ final class Dictation: ObservableObject {
         req.shouldReportPartialResults = true
         req.addsPunctuation = true
         req.requiresOnDeviceRecognition = onDevicePref && recognizer.supportsOnDeviceRecognition
+        req.taskHint = .dictation
+        let hot = hotwords()      // 常用词（医患通、小芽……）：告诉识别器这些词存在，听到近音优先往它们上靠
+        if !hot.isEmpty { req.contextualStrings = hot }
         request = req
         taskSeq += 1
         let t = taskSeq
@@ -449,7 +493,8 @@ final class Dictation: ObservableObject {
             let text = result?.bestTranscription.formattedString
             let isFinal = result?.isFinal ?? false
             let err = error?.localizedDescription
-            Task { @MainActor in self?.onRecognition(t, text: text, isFinal: isFinal, err: err) }
+            let hints = result.map { Self.hintsFrom($0.bestTranscription) } ?? []
+            Task { @MainActor in self?.onRecognition(t, text: text, isFinal: isFinal, err: err, hints: hints) }
         }
         sink.set(req)
     }
@@ -468,8 +513,20 @@ final class Dictation: ObservableObject {
         }
     }
 
-    private func onRecognition(_ t: Int, text: String?, isFinal: Bool, err: String?) {
+    /// 识别器对某个词没把握（置信度低）时会给出别的可能写法：整理成「词→候选/候选」，润色时让它按语境从里面选。
+    /// 中间结果没有置信度（全是 0），这时不出备选，免得把每个词都当成不确定
+    nonisolated static func hintsFrom(_ tr: SFTranscription) -> [String] {
+        guard tr.segments.contains(where: { $0.confidence > 0 }) else { return [] }
+        return tr.segments.compactMap { s in
+            guard s.confidence < 0.5, !s.alternativeSubstrings.isEmpty else { return nil }
+            return s.substring + "→" + s.alternativeSubstrings.prefix(3).joined(separator: "/")
+        }
+    }
+
+    private func onRecognition(_ t: Int, text: String?, isFinal: Bool, err: String?, hints: [String]) {
         guard t == taskSeq, !finished else { return }
+        for h in hints where !altHints.contains(h) { altHints.append(h) }
+        if altHints.count > 12 { altHints.removeFirst(altHints.count - 12) }
         if let text, !text.isEmpty {
             if segs.update(text) { log("停顿后识别器从头重来，前面的话已接上") }
             partial = SpeechSegments.remainder(segs.text, skipping: cutBase)
@@ -493,6 +550,7 @@ final class Dictation: ObservableObject {
     }
 
     private func cleanup() {
+        ctxBefore = ""
         Hub.shared.clearLevels()
         finishTimer?.invalidate()
         autoStop?.invalidate()
@@ -505,6 +563,7 @@ final class Dictation: ObservableObject {
     private func finish() {
         guard !finished else { return }
         finished = true
+        let ctx = ctxBefore, hints = altHints      // cleanup 会清掉上文，先取走
         cleanup()
         let raw = partial.trimmingCharacters(in: .whitespacesAndNewlines)
         let secs = Date().timeIntervalSince(recStart)
@@ -528,10 +587,11 @@ final class Dictation: ObservableObject {
             return
         }
         let style = self.style, g = gen
+        if !hints.isEmpty { log("识别备选：\(hints.joined(separator: "；").prefix(200))") }      // 留个记录：看苹果到底给不给、给的有没有用
         Task {
             var note = info, warn: String?
             do {
-                let (t, ms) = try await Server.polish(raw, style: style)
+                let (t, ms) = try await Server.polish(raw, style: style, context: ctx, hints: hints)
                 guard g == gen else { return }      // 等润色时这次录音被作废了（键盘换了输入框）
                 lastPolished = t; note += "，润色 \(ms) 毫秒"
                 if t != raw { emit(t) }

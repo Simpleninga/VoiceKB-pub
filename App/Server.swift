@@ -48,8 +48,12 @@ enum Server {
     }
 
     /// 返回（润色后的文字，服务器上花的毫秒）。润色要 2 秒左右，超时放宽到 25 秒
-    static func polish(_ text: String, style: String) async throws -> (String, Int) {
-        let r = try await call("POST", "/kb/v1/polish", body: ["text": text, "style": style], timeout: 25)
+    /// context = 输入框里光标前的字（只给服务器判断语境，不会被改写）；hints = 识别器对没把握的词给的备选（「词→候选/候选」）
+    static func polish(_ text: String, style: String, context: String = "", hints: [String] = []) async throws -> (String, Int) {
+        var body: [String: Any] = ["text": text, "style": style]
+        if !context.isEmpty { body["context"] = context }
+        if !hints.isEmpty { body["hints"] = hints }
+        let r = try await call("POST", "/kb/v1/polish", body: body, timeout: 25)
         guard let t = r["text"] as? String else { throw Fail(msg: (r["error"] as? String) ?? "润色失败") }
         return (t, r["ms"] as? Int ?? 0)
     }

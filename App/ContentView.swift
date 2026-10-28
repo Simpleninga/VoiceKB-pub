@@ -3,7 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var d: Dictation
     @AppStorage("keepMin") private var keepMin = 30
-    @AppStorage("onDevice") private var onDevice = true
+    @AppStorage("onDevice") private var onDevice = false
     @AppStorage("polish") private var polish = true
     @AppStorage("style") private var style = "light"
     @State private var serviceMsg = "检查中…"

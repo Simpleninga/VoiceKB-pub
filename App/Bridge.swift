@@ -28,6 +28,13 @@ final class Hub: @unchecked Sendable {
     func clearLevels() { lock.withLock { _levels = [] } }
 }
 
+/// 只准成功一次的开关（verify 里连接成功、失败、超时三条路谁先到算谁）
+private final class Once: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func first() -> Bool { lock.withLock { if done { return false }; done = true; return true } }
+}
+
 /// 键盘 ↔ 主 App 的通道：免费签名拿不到 App Group，所以主 App 在本机回环地址 127.0.0.1 上开一个极小的 HTTP 服务，
 /// 键盘（用户开了「允许完全访问」才有网络）来取状态、递指令。App 被系统冻结或退出时连不上，键盘就当「没待命」。
 ///   GET  /s    → {"app": …, "kbd": …, "hb": …, "lv": …}
@@ -39,6 +46,7 @@ final class Bridge: @unchecked Sendable {
     private var listener: NWListener?
     private var _ready = false
     private var _lastHit: Date?
+    private var lastStart: Date?          // 只在 queue 里读写
     var onKbd: (() -> Void)?
 
     private var ready: Bool { get { lock.withLock { _ready } } set { lock.withLock { _ready = newValue } } }
@@ -51,10 +59,12 @@ final class Bridge: @unchecked Sendable {
         return "监听中，键盘 \(Int(Date().timeIntervalSince(t))) 秒前连过"
     }
 
-    /// 已经在监听就什么也不做；回到前台、监听挂了时再调一次就能补上
-    func start() {
+    /// 已经在监听就什么也不做；回到前台、监听挂了时再调一次就能补上。force = 不管状态强制重建（verify 发现监听其实不通时用）
+    func start(force: Bool = false) {
         queue.async { [self] in
-            if ready { return }
+            if force, let t = lastStart, Date().timeIntervalSince(t) < 2 { return }      // 刚重建过，别来回折腾
+            if ready && !force { return }
+            lastStart = Date()
             listener?.cancel()
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
@@ -75,6 +85,31 @@ final class Bridge: @unchecked Sendable {
             l.start(queue: queue)
             listener = l
         }
+    }
+
+    /// 自己连一下自己的监听。App 被系统冻结又唤醒以后，监听可能已被悄悄收走、状态却还显示「就绪」，start() 就以为没事——
+    /// 键盘连不上、判成「主 App 没起来」，只有划掉重开才好（10-28 16:17、16:29 日志）。连不通就强制重建；done(false) = 刚重建过
+    func verify(_ done: (@Sendable (Bool) -> Void)? = nil) {
+        guard let port = NWEndpoint.Port(rawValue: KB.port) else { return }
+        let c = NWConnection(host: .ipv4(.loopback), port: port, using: .tcp)
+        let once = Once()
+        let finish: @Sendable (Bool) -> Void = { [weak self] ok in
+            guard once.first() else { return }
+            c.cancel()
+            if !ok { self?.start(force: true) }
+            done?(ok)
+        }
+        c.stateUpdateHandler = { st in
+            switch st {
+            case .ready:
+                c.send(content: Data("GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".utf8), completion: .contentProcessed { _ in })
+                c.receive(minimumIncompleteLength: 1, maximumLength: 256) { data, _, _, _ in finish(!(data ?? Data()).isEmpty) }
+            case .failed, .waiting: finish(false)
+            default: break
+            }
+        }
+        c.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 1.5) { finish(false) }
     }
 
     private func serve(_ c: NWConnection) {
@@ -109,10 +144,12 @@ final class Bridge: @unchecked Sendable {
     }
 
     private func reply(_ c: NWConnection, _ method: String, _ path: String, _ body: Data) {
-        lastHit = Date()
+        if path != "/ping" { lastHit = Date() }      // /ping 是 App 自己查自己，不算键盘连过
         var status = "200 OK"
         var obj: [String: Any] = ["ok": 1]
         switch (method, path) {
+        case ("GET", "/ping"):
+            break
         case ("GET", "/s"):
             obj = ["app": Hub.shared.app, "kbd": Hub.shared.kbd, "hb": Hub.shared.hb, "lv": Hub.shared.levels]
         case ("POST", "/kbd"):

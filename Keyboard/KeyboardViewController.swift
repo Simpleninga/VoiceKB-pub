@@ -3037,6 +3037,26 @@ final class KeyboardViewController: UIInputViewController {
         saveK()
     }
 
+    /// 开始说话前交给主 App 的两样参考：输入框里光标前的字（润色拿它判断你在聊什么）、我最常用的词（识别器优先往这些词上靠）
+    private func voiceContext() -> [String: Any] {
+        var d: [String: Any] = [:]
+        if let c = contextBefore(), !c.isEmpty { d["ctx"] = String(c.suffix(200)) }
+        let hot = learnedWords(limit: 60)
+        if !hot.isEmpty { d["hot"] = hot }
+        return d
+    }
+
+    /// 个人学习里用得最多的词和自造词（≥2 字）
+    private func learnedWords(limit: Int) -> [String] {
+        guard learnOn, let u = engine?.user else { return [] }
+        return engineQueue.sync { () -> [String] in
+            let ws = u.w.sorted { ($0.value.n, $0.value.last) > ($1.value.n, $1.value.last) }.map { $0.key }
+            let ps = u.p.sorted { ($0.value.n, $0.value.last) > ($1.value.n, $1.value.last) }.map { $0.key.word }
+            var seen = Set<String>()
+            return (ws.prefix(limit) + ps.prefix(limit / 3)).filter { seen.insert($0).inserted }
+        }
+    }
+
     /// 键盘上发生的事记进主 App 的日志（它会传到服务器）；主 App 没在跑时丢掉
     private func klog(_ s: String) {
         lseq += 1
@@ -3089,7 +3109,7 @@ final class KeyboardViewController: UIInputViewController {
         default:
             if snap.beatAge < 3 {
                 expectOwnRecording()
-                send("start")
+                send("start", voiceContext())
                 watchStart(src: "mic")
             } else {
                 openApp(src: "mic")
@@ -3192,7 +3212,7 @@ final class KeyboardViewController: UIInputViewController {
         if snap.beatAge < 3 {
             pttActive = true
             expectOwnRecording()
-            send("start")
+            send("start", voiceContext())
             watchStart(src: "space")
             refresh()
         } else {
@@ -3228,6 +3248,7 @@ final class KeyboardViewController: UIInputViewController {
         c.queryItems = [URLQueryItem(name: "how", value: host.how), URLQueryItem(name: "src", value: src)]
         if let id = host.id { c.queryItems?.append(URLQueryItem(name: "host", value: id)) }
         if let pid = HostApp.hostPID(self) { c.queryItems?.append(URLQueryItem(name: "pid", value: String(pid))) }
+        if let ctx = contextBefore(), !ctx.isEmpty { c.queryItems?.append(URLQueryItem(name: "ctx", value: String(ctx.suffix(120)))) }
         guard let url = c.url else { return }
         expectOwnRecording()
         opening = true
