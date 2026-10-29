@@ -197,6 +197,10 @@ final class Dictation: ObservableObject {
         // 正在听的歌变糊、音量突变，耳机麦克风也只有窄带，识别很差；还会因为「后台不许打断别人」让引擎重启报 !int（10-25 实测）。
         // 这样耳机只管放声音，收音一律用手机自己的麦克风。
         try s.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .allowBluetoothA2DP])
+        // 录音会话一开，系统默认把锁屏音、键盘音、通知提示音和震动全部静音（免得被录进去，录音类 App 都这样，
+        // 跟 mixWithOthers 无关、App 关不掉）——后台待命全程也如此（用户 10-29：待命时锁屏/通知都没声音）。
+        // 这个开关（iOS 13+）让系统提示音照常响；代价是它们偶尔会混进听写音频，对识别影响很小
+        do { try s.setAllowHapticsAndSystemSoundsDuringRecording(true) } catch { log("系统提示音开关没设上：\(error.localizedDescription)") }
         try s.setActive(true)
         if let mic = s.availableInputs?.first(where: { $0.portType == .builtInMic }) { try? s.setPreferredInput(mic) }
         var input = engine.inputNode
