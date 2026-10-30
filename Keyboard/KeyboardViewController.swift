@@ -2203,8 +2203,8 @@ final class KeyboardViewController: UIInputViewController {
     private var punctTimer: Timer?
     private var punctLong = false      // 已经按够久、句号打出去了，松手不再打逗号
 
-    /// 上滑超过这么多就算要句号
-    static let punctSwipe: CGFloat = 12
+    /// 上滑超过这么多就算要句号（1.35：12 太灵敏，手指上推就误触；调到 32，要明确大幅上滑才出句号）
+    static let punctSwipe: CGFloat = 32
 
     /// 松手时手指比按下时往上挪了多少（dy < 0 = 往上）：够了就是句号，否则逗号
     static func punctPicksPeriod(dy: CGFloat) -> Bool { dy <= -punctSwipe }
@@ -2234,7 +2234,7 @@ final class KeyboardViewController: UIInputViewController {
         keyFeedback()
         punctLong = false
         punctTimer?.invalidate()
-        punctTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+        punctTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.punctLong = true
             self.typePunct(self.chinese ? "。" : ".")
@@ -2255,13 +2255,10 @@ final class KeyboardViewController: UIInputViewController {
         punctLong = false
     }
 
-    /// 打标点：正在拼的先落下（中文：第一个候选刚好吃完整串就打候选，否则把字母原样打出去）
+    /// 打标点：正在拼的先落下（commitRaw 会先上候选再落剩余字母），再插符号
     private func typePunct(_ p: String) {
         typed()
-        if composing {
-            freshCands()
-            if chinese, let c = cands.first, c.consume >= buffer.count { commit(c) } else { commitRaw() }
-        }
+        if composing { freshCands(); commitRaw() }
         textDocumentProxy.insertText(p)
         addCtx(p)
         updatePredictions()
@@ -2611,6 +2608,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func typeSymbol(_ s: String) {
         typed()
+        if composing { freshCands(); commitRaw() }   // 正在拼字时按符号：先落下（先上候选再落剩余字母），别让符号把拼音打散
         if Self.shouldFixDecimal(before: textDocumentProxy.documentContextBeforeInput, typing: s) {
             textDocumentProxy.deleteBackward()
             textDocumentProxy.insertText(".")
@@ -2899,8 +2897,12 @@ final class KeyboardViewController: UIInputViewController {
         updateCandidates()
     }
 
-    /// 拼音串还没选字就要走（换行、切语言、切层、点麦克风）：把字母原样打出去
+    /// 拼音串还没选字就要走（换行、切语言、切层、点麦克风、打标点）。
+    /// 中文：先上第一个候选（和按空格一致），剩下的字母原样落下——否则会把整串拼音字母打出去，看着像「打好的字又变回拼音」。
     private func commitRaw() {
+        guard !buffer.isEmpty else { return }
+        freshCands()                                                  // 确保候选对得上当前输入串
+        if chinese, let c = cands.first, c.consume > 0 { commit(c) }  // 先上能匹配的候选
         guard !buffer.isEmpty else { return }
         var t = buffer.replacingOccurrences(of: "'", with: "")
         if t.contains(where: { $0.isNumber }) { freshCands() }
