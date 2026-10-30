@@ -151,6 +151,8 @@ final class KeyboardRoot: UIView {
     var onKeyMoved: ((KeyButton, String?) -> Void)?
     /// 手指抬起 / 取消（收起气泡）
     var onKeyUp: (() -> Void)?
+    /// 按住够久、上滑可以打数字 / 符号了（震一下，让人知道现在往上滑才管用）
+    var onSwipeArmed: ((KeyButton) -> Void)?
     /// 动态热区：某个键现在「更可能是下一个要按的」，在两个键的交界处让它多占几个点（单位 pt，可正可负）
     var letterBias: ((KeyButton) -> CGFloat)?
     private(set) var stats = TouchStats()
@@ -167,12 +169,17 @@ final class KeyboardRoot: UIView {
     /// 往上滑超过这么多、而且竖向为主，就锁在这个键上「上滑打数字」；回落到不足 swipeUnlockDistance、或拐成横滑才解锁
     static let swipeUpDistance: CGFloat = 12
     static let swipeUnlockDistance: CGFloat = 6
+    /// 上滑出数字 / 符号要先按住这么久才认（用户 10-30：打字时手指一飘就往上了，符号把整句拼音打成英文和标点）。
+    /// 没按够久的上滑只当「滑过去改」，松手打的是字母；按住够久（震一下）再上滑才打数字 / 符号
+    static let swipeUpHold: TimeInterval = 1.0
 
     private struct Finger {
         var key: KeyButton
         var start: CGPoint
         let t0: TimeInterval
+        var armStart: TimeInterval   // 从这个时刻起按在这个键上（滑到别的键就重新计时，上滑符号要重新按够 1 秒）
         var up = false
+        var armed = false       // 按够 swipeUpHold 了：这次触摸的上滑可以打符号
         var dragged = false
         var far = false
     }
@@ -264,7 +271,7 @@ final class KeyboardRoot: UIView {
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for t in touches { fingerMoved(ObjectIdentifier(t), to: t.location(in: self)) }
+        for t in touches { fingerMoved(ObjectIdentifier(t), to: t.location(in: self), time: t.timestamp) }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -292,7 +299,7 @@ final class KeyboardRoot: UIView {
         }
         note("↓(\(Int(p.x)),\(Int(p.y)))→\(Self.label(best.key)) \(String(format: "%.1f", best.score))")
         if !best.key.convert(best.key.bounds, to: self).insetBy(dx: -1, dy: -1).contains(p) { stats.gap += 1 }      // 不在任何格子里（九键键间的真缝）
-        fingers[id] = Finger(key: best.key, start: p, t0: time)
+        fingers[id] = Finger(key: best.key, start: p, t0: time, armStart: time)
         let k = best.key
         k.touchHeld = true
         k.dragDelta = .zero
@@ -300,7 +307,7 @@ final class KeyboardRoot: UIView {
         if k.commitsOnRelease { onKeyDown?(k) } else { k.sendActions(for: .touchDown) }
     }
 
-    func fingerMoved(_ id: AnyHashable, to p: CGPoint) {
+    func fingerMoved(_ id: AnyHashable, to p: CGPoint, time: TimeInterval) {
         guard var f = fingers[id] else { return }
         let dx = p.x - f.start.x, dy = p.y - f.start.y
         let k = f.key
@@ -309,9 +316,14 @@ final class KeyboardRoot: UIView {
             let near = nearest(to: p, sticky: k)
             // 上滑锁键（用户 10-26：往上滑老滑进上一排的键）：竖向为主、往上够远就锁在这个键上，手指滑到上一排哪个键上面都不换键，松手打它的数字 / 符号；
             // 一旦锁住，回落到起点附近或拐成横滑才解锁（解锁后照旧是「滑过去改」）
+            // 上滑要先按住够久（用户 10-30：一飘就出符号）：没按够，往上滑多少都只是「滑过去改」，打出来的还是字母
             var up = f.up
             if k.swipeUp != nil {
-                up = up ? (dy < -Self.swipeUnlockDistance && -dy > abs(dx) * 0.8) : (dy < -Self.swipeUpDistance && -dy > abs(dx) * 1.5)
+                if !f.armed, time - f.armStart >= Self.swipeUpHold {
+                    f.armed = true
+                    onSwipeArmed?(k)
+                }
+                up = up ? (dy < -Self.swipeUnlockDistance && -dy > abs(dx) * 0.8) : (f.armed && dy < -Self.swipeUpDistance && -dy > abs(dx) * 1.5)
             }
             f.far = !up && (near?.score ?? -100) < -70
             if up != f.up {
@@ -325,6 +337,8 @@ final class KeyboardRoot: UIView {
                 n.key.isHighlighted = true
                 f.key = n.key
                 f.start = p
+                f.armStart = time      // 换了键就重新按够 1 秒才算「要上滑打符号」
+                f.armed = false
                 stats.slid += 1
                 onKeyMoved?(n.key, nil)
             }
@@ -1851,6 +1865,7 @@ final class KeyboardViewController: UIInputViewController {
         pad.onKeyDown = { [weak self] k in self?.keyFeedback(); self?.showPreview(k) }
         pad.onKeyMoved = { [weak self] k, alt in self?.showPreview(k, text: alt) }      // 手指滑到别的键 / 上滑：气泡跟着走，不再响
         pad.onKeyUp = { [weak self] in self?.hidePreview() }
+        pad.onSwipeArmed = { [weak self] _ in self?.keyFeedback() }      // 按够 1 秒了：震一下，告诉用户现在上滑才出数字 / 符号
         pad.letterBias = { [weak self] k in self?.hotBias(k) ?? 0 }      // 动态热区
         pad.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(pad)

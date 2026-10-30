@@ -998,7 +998,7 @@ final class KeyboardSmokeTests: XCTestCase {
         let q = try keyNamed(vc, "q"), w = try keyNamed(vc, "w")
         r.fingerDown(1, at: center(q, in: r), time: 0)
         XCTAssertEqual(vc.previewText, "q")
-        r.fingerMoved(1, to: center(w, in: r))
+        r.fingerMoved(1, to: center(w, in: r), time: 0.1)
         XCTAssertEqual(vc.previewText, "w", "气泡跟着手指走")
         XCTAssertEqual(vc.buffer, "")
         r.fingerUp(1, at: center(w, in: r), time: 0.2, cancelled: false)
@@ -1006,7 +1006,7 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertEqual(r.stats.slid, 1)
     }
 
-    /// 字母键上滑打数字（二期）：q 上滑 → 1；气泡里先显示要打的数字；顶栏拼音串里不会有 q
+    /// 字母键按住 1 秒再上滑打数字（二期）：q 上滑 → 1；气泡里先显示要打的数字；顶栏拼音串里不会有 q
     func testSwipeUpTypesDigit() throws {
         let vc = makeKeyboard()
         let r = try XCTUnwrap(vc.router)
@@ -1015,19 +1015,36 @@ final class KeyboardSmokeTests: XCTestCase {
         let q = try keyNamed(vc, "q")
         let c = center(q, in: r)
         r.fingerDown(1, at: c, time: 0)
-        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 22))
+        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 22), time: 1.1)      // 按够 1 秒再上滑
         XCTAssertEqual(vc.previewText, "1", "上滑时气泡显示要打的数字")
-        r.fingerUp(1, at: CGPoint(x: c.x, y: c.y - 22), time: 0.25, cancelled: false)
+        r.fingerUp(1, at: CGPoint(x: c.x, y: c.y - 22), time: 1.2, cancelled: false)
         XCTAssertEqual(typedSymbols, ["1"])
         XCTAssertEqual(vc.buffer, "", "没有把 q 打进拼音")
         XCTAssertEqual(r.stats.swiped, 1)
         // 上滑一小段又滑回来：还是打字母
-        r.fingerDown(2, at: c, time: 1)
-        r.fingerMoved(2, to: CGPoint(x: c.x, y: c.y - 22))
-        r.fingerMoved(2, to: c)
+        r.fingerDown(2, at: c, time: 2)
+        r.fingerMoved(2, to: CGPoint(x: c.x, y: c.y - 22), time: 3.1)
+        r.fingerMoved(2, to: c, time: 3.2)
         XCTAssertEqual(vc.previewText, "q", "滑回来气泡恢复成字母")
-        r.fingerUp(2, at: c, time: 1.2, cancelled: false)
+        r.fingerUp(2, at: c, time: 3.3, cancelled: false)
         XCTAssertEqual(vc.buffer, "q")
+    }
+
+    /// 打字时手指一飘就往上了、没按够 1 秒：还是打字母，不出数字 / 符号（用户 10-30 报的误触）
+    func testQuickSwipeUpTypesLetterNotSymbol() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        var typedSymbols: [String] = []
+        vc.symbolSink = { typedSymbols.append($0) }
+        let q = try keyNamed(vc, "q")
+        let c = center(q, in: r)
+        r.fingerDown(1, at: c, time: 0)
+        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 20), time: 0.12)      // 快速上飘 20pt，按住不到 1 秒
+        XCTAssertEqual(vc.previewText, "q", "没按够久，气泡还是字母")
+        r.fingerUp(1, at: CGPoint(x: c.x, y: c.y - 20), time: 0.16, cancelled: false)
+        XCTAssertEqual(typedSymbols, [], "不该打数字 / 符号")
+        XCTAssertEqual(vc.buffer, "q", "打的是字母")
+        XCTAssertEqual(r.stats.swiped, 0)
     }
 
     /// 第二排的键往上滑进了第一排的键：是「按偏了滑过去改」，打第一排的字母，不是第二排键的符号
@@ -1039,19 +1056,19 @@ final class KeyboardSmokeTests: XCTestCase {
         let s = try keyNamed(vc, "s"), w = try keyNamed(vc, "w")
         let cs = center(s, in: r), up = CGPoint(x: cs.x, y: center(w, in: r).y)
         r.fingerDown(1, at: cs, time: 0)
-        r.fingerMoved(1, to: CGPoint(x: cs.x, y: cs.y - 14))      // 往上够 12pt、竖向为主：锁住 s
+        r.fingerMoved(1, to: CGPoint(x: cs.x, y: cs.y - 14), time: 1.1)      // 按够 1 秒、往上够 12pt、竖向为主：锁住 s
         XCTAssertEqual(vc.previewText, "！", "锁住以后气泡显示要打的符号")
-        r.fingerMoved(1, to: up)                                   // 一直滑进上一排的键上面也不换键（用户 10-26：往上滑老滑进另一个键）
+        r.fingerMoved(1, to: up, time: 1.2)                                 // 一直滑进上一排的键上面也不换键（用户 10-26：往上滑老滑进另一个键）
         XCTAssertEqual(vc.previewText, "！")
-        r.fingerUp(1, at: up, time: 0.3, cancelled: false)
+        r.fingerUp(1, at: up, time: 1.3, cancelled: false)
         XCTAssertEqual(typedSymbols, ["！"], "打的是 s 的上滑符号，不是上一排的字母")
         XCTAssertEqual(vc.buffer, "")
         XCTAssertEqual(r.stats.swiped, 1)
         // 锁住以后拐成横滑：解锁，照旧是「滑过去改」
-        r.fingerDown(2, at: cs, time: 1)
-        r.fingerMoved(2, to: CGPoint(x: cs.x, y: cs.y - 14))
-        r.fingerMoved(2, to: CGPoint(x: cs.x + 40, y: cs.y - 14))      // 横向 40 > 竖向 14：不再是上滑
-        r.fingerUp(2, at: CGPoint(x: cs.x + 40, y: cs.y - 14), time: 1.3, cancelled: false)
+        r.fingerDown(2, at: cs, time: 2)
+        r.fingerMoved(2, to: CGPoint(x: cs.x, y: cs.y - 14), time: 3.1)
+        r.fingerMoved(2, to: CGPoint(x: cs.x + 40, y: cs.y - 14), time: 3.2)      // 横向 40 > 竖向 14：不再是上滑
+        r.fingerUp(2, at: CGPoint(x: cs.x + 40, y: cs.y - 14), time: 3.3, cancelled: false)
         XCTAssertEqual(typedSymbols, ["！"], "拐成横滑就不再打符号")
         XCTAssertFalse(vc.buffer.isEmpty)
     }
@@ -1066,7 +1083,7 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertEqual(vc.buffer, "a", "短促的取消当点按")
         XCTAssertEqual(r.stats.saved, 1)
         r.fingerDown(2, at: center(b, in: r), time: 1)
-        r.fingerMoved(2, to: CGPoint(x: center(b, in: r).x + 60, y: center(b, in: r).y))
+        r.fingerMoved(2, to: CGPoint(x: center(b, in: r).x + 60, y: center(b, in: r).y), time: 1.5)
         r.fingerUp(2, at: CGPoint(x: center(b, in: r).x + 60, y: center(b, in: r).y), time: 1.8, cancelled: true)
         XCTAssertEqual(vc.buffer, "a", "拖了一阵又被系统取消，不打")
         XCTAssertEqual(r.stats.cancelled, 1)
@@ -1108,9 +1125,9 @@ final class KeyboardSmokeTests: XCTestCase {
         let sp = try keyNamed(vc, id: "space")
         let c = center(sp, in: r)
         r.fingerDown(1, at: c, time: 0)
-        r.fingerMoved(1, to: CGPoint(x: c.x + 30, y: c.y))
-        r.fingerMoved(1, to: CGPoint(x: c.x + 45, y: c.y))
-        r.fingerMoved(1, to: CGPoint(x: c.x - 20, y: c.y))
+        r.fingerMoved(1, to: CGPoint(x: c.x + 30, y: c.y), time: 0.1)
+        r.fingerMoved(1, to: CGPoint(x: c.x + 45, y: c.y), time: 0.2)
+        r.fingerMoved(1, to: CGPoint(x: c.x - 20, y: c.y), time: 0.3)
         r.fingerUp(1, at: CGPoint(x: c.x - 20, y: c.y), time: 0.5, cancelled: false)
         XCTAssertEqual(moves.reduce(0, +), -1, "最后手指在起点左边 20pt = 往左一个字：\(moves)")
         XCTAssertFalse(vc.pttActive)
@@ -1129,9 +1146,9 @@ final class KeyboardSmokeTests: XCTestCase {
         let c = center(del, in: r)
         r.fingerDown(1, at: c, time: 0)
         XCTAssertEqual(vc.buffer, "niha", "按下去先删一个")
-        r.fingerMoved(1, to: CGPoint(x: c.x - 30, y: c.y))
+        r.fingerMoved(1, to: CGPoint(x: c.x - 30, y: c.y), time: 0.1)
         XCTAssertEqual(vc.buffer, "niha", "滑得不够远不清")
-        r.fingerMoved(1, to: CGPoint(x: c.x - 80, y: c.y))
+        r.fingerMoved(1, to: CGPoint(x: c.x - 80, y: c.y), time: 0.2)
         XCTAssertEqual(vc.buffer, "", "左滑够远，清空")
         r.fingerUp(1, at: CGPoint(x: c.x - 80, y: c.y), time: 0.4, cancelled: false)
         XCTAssertEqual(vc.buffer, "")
