@@ -2686,7 +2686,7 @@ final class KeyboardViewController: UIInputViewController {
     private func typeReturn() {
         typed()
         if composing {
-            commitRaw()
+            commitRaw(rawOnly: chinese && nineSyll == nil)      // 26 键中文：发送键直接出照打的英文字母；九键/英文照旧先上候选
             ctxTail = ""
             predictions = []
             refreshBar()
@@ -2914,11 +2914,14 @@ final class KeyboardViewController: UIInputViewController {
 
     /// 拼音串还没选字就要走（换行、切语言、切层、点麦克风、打标点）。
     /// 中文：先上第一个候选（和按空格一致），剩下的字母原样落下——否则会把整串拼音字母打出去，看着像「打好的字又变回拼音」。
-    private func commitRaw() {
+    /// rawOnly（26 键中文的发送键）：不先上候选，直接把照打的字母原样打出去（用户 10-30：发送 = 出英文）。
+    private func commitRaw(rawOnly: Bool = false) {
         guard !buffer.isEmpty else { return }
-        freshCands()                                                  // 确保候选对得上当前输入串
-        if chinese, let c = cands.first, c.consume > 0 { commit(c) }  // 先上能匹配的候选
-        guard !buffer.isEmpty else { return }
+        if !rawOnly {
+            freshCands()                                                  // 确保候选对得上当前输入串
+            if chinese, let c = cands.first, c.consume > 0 { commit(c) }  // 先上能匹配的候选
+            guard !buffer.isEmpty else { return }
+        }
         var t = buffer.replacingOccurrences(of: "'", with: "")
         if t.contains(where: { $0.isNumber }) { freshCands() }
         if t.contains(where: { $0.isNumber }), let k = cands.first?.key, k.count >= t.count { t = String(k.prefix(t.count)) }     // 九键：数字串落成第一个候选的拼音
