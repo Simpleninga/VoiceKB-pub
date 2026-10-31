@@ -202,7 +202,16 @@ final class Dictation: ObservableObject {
         // 这个开关（iOS 13+）让系统提示音照常响；代价是它们偶尔会混进听写音频，对识别影响很小
         do { try s.setAllowHapticsAndSystemSoundsDuringRecording(true) } catch { log("系统提示音开关没设上：\(error.localizedDescription)") }
         try s.setActive(true)
-        if let mic = s.availableInputs?.first(where: { $0.portType == .builtInMic }) { try? s.setPreferredInput(mic) }
+        // 收音一律用手机麦克风。setPreferredInput 只在 session 激活后生效，失败要留痕（不能 try? 吞掉，否则掉进 HFP 也查不到）。
+        preferBuiltInMic(s)
+        // 偶发竞态：激活后路由仍可能被系统落到蓝牙 HFP 通话模式（10-28、10-31 都实测过：输入输出全 BluetoothHFP、24000 Hz，
+        // 耳机音质变糊、音量突变）。HFP 的输入输出是绑定的，光 setPreferredInput 有时纠不回来，重激活一次让系统重新解析路由。
+        if s.currentRoute.inputs.contains(where: { $0.portType == .bluetoothHFP }) {
+            log("路由落进蓝牙 HFP，重激活纠正（\(routeText())）")
+            try s.setActive(false, options: .notifyOthersOnDeactivation)
+            try s.setActive(true)
+            preferBuiltInMic(s)
+        }
         var input = engine.inputNode
         var fmt = input.outputFormat(forBus: 0)
         if fmt.sampleRate <= 0 || fmt.channelCount == 0 {
@@ -235,6 +244,17 @@ final class Dictation: ObservableObject {
             ports.isEmpty ? "无" : ports.map { $0.portType.rawValue }.joined(separator: "+")
         }
         return "输入 \(names(r.inputs)) / 输出 \(names(r.outputs))"
+    }
+
+    /// 优先用手机麦克风收音（蓝牙耳机只负责放声音）。失败要写日志，不能静默吞掉。
+    private func preferBuiltInMic(_ s: AVAudioSession) {
+        guard let mic = s.availableInputs?.first(where: { $0.portType == .builtInMic }) else {
+            log("没找到内置麦克风输入：\(s.availableInputs?.map { $0.portType.rawValue }.joined(separator: "+") ?? "无")")
+            return
+        }
+        do { try s.setPreferredInput(mic) } catch {
+            log("优先内置麦克风没设上：\(error.localizedDescription)")
+        }
     }
 
     func stopEngine() {
