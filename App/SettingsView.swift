@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage("keepMin") private var keepMin = 30
     @AppStorage("onDevice") private var onDevice = false
     @AppStorage("polish") private var polish = true
+    @AppStorage("denoise") private var denoise = true
     @AppStorage("style") private var style = "light"
     @State private var serviceMsg = "检查中…"
 
@@ -64,6 +65,26 @@ struct SettingsView: View {
 
             Section {
                 HStack(spacing: 12) {
+                    IconBadge(systemImage: "ear", color: Color(uiColor: .systemIndigo))
+                    Toggle("背景降噪", isOn: $denoise)
+                }
+
+                NavigationLink {
+                    LexiconView()
+                } label: {
+                    HStack(spacing: 12) {
+                        IconBadge(systemImage: "character.book.closed", color: Brand.green)
+                        Text("我的词库")
+                    }
+                }
+            } header: {
+                Text("识别")
+            } footer: {
+                Text("降噪压低电脑外放等背景声；想转写外放的声音就关掉。词库里的词打字和语音都用，你改过的词会自动记住")
+            }
+
+            Section {
+                HStack(spacing: 12) {
                     IconBadge(systemImage: "sparkles", color: Color(uiColor: .systemPurple))
                     Toggle("说完润色", isOn: $polish)
                 }
@@ -112,6 +133,7 @@ struct SettingsView: View {
             XAsr.shared.resetTries()
             AsrModel.shared.ensure()
         }
+        .onChange(of: denoise) { _, _ in Dictation.shared.denoiseChanged() }
     }
 
     private var version: String {

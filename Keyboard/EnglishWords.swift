@@ -3,6 +3,8 @@ import Foundation
 /// 英文联想：词表（tools/build_en.py 生成，按词频从高到低）按首字母分桶，打一个字母查一次，桶里顺着找前缀。
 final class EnglishWords {
     private var buckets: [UInt8: [String]] = [:]
+    /// 词库下发的英文词（小写去空格 → 正确写法：deepseek → DeepSeek），联想时排最前
+    var extra: [String: String] = [:]
 
     init?(path: String) {
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
@@ -18,8 +20,9 @@ final class EnglishWords {
         guard let first = p.utf8.first, let list = buckets[first] else { return [] }
         let upperAll = prefix.count > 1 && prefix == prefix.uppercased()
         let capFirst = prefix.first.map { String($0) == String($0).uppercased() && String($0) != String($0).lowercased() } ?? false
-        var out: [String] = []
-        for w in list where w.count > p.count && w.hasPrefix(p) {
+        var out = Array(extra.filter { $0.key.count > p.count && $0.key.hasPrefix(p) }.sorted { $0.key.count < $1.key.count }.map(\.value).prefix(limit))
+        for w in list where w.count > p.count && w.hasPrefix(p) && !out.contains(where: { $0.lowercased() == w }) {
+            if out.count >= limit { break }
             out.append(upperAll ? w.uppercased() : (capFirst ? w.prefix(1).uppercased() + w.dropFirst() : w))
             if out.count >= limit { break }
         }
@@ -38,7 +41,7 @@ final class EnglishWords {
     func mixedWord(_ buf: String) -> String? {
         guard buf.count >= 2, buf.count <= 16, buf.allSatisfy({ $0.isASCII && $0.isLetter }) else { return nil }
         let l = buf.lowercased()
-        if let w = Self.known[l] { return w }
+        if let w = extra[l] ?? Self.known[l] { return w }
         guard l.count >= 4, let first = l.utf8.first, let list = buckets[first], list.contains(l) else { return nil }
         return buf
     }

@@ -39,6 +39,7 @@ private final class Once: @unchecked Sendable {
 /// 键盘（用户开了「允许完全访问」才有网络）来取状态、递指令。App 被系统冻结或退出时连不上，键盘就当「没待命」。
 ///   GET  /s    → {"app": …, "kbd": …, "hb": …, "lv": …}
 ///   POST /kbd  ← 键盘写的 JSON（整个替换），写完立刻通知 onKbd
+///   GET  /lex  → {"words": [[词, 拼音键, 来源], …]}   键盘看到词库版本变了来取
 final class Bridge: @unchecked Sendable {
     static let shared = Bridge()
     private let queue = DispatchQueue(label: "voicekb.bridge")
@@ -152,6 +153,8 @@ final class Bridge: @unchecked Sendable {
             break
         case ("GET", "/s"):
             obj = ["app": Hub.shared.app, "kbd": Hub.shared.kbd, "hb": Hub.shared.hb, "lv": Hub.shared.levels]
+        case ("GET", "/lex"):
+            obj = ["words": UserDefaults.standard.array(forKey: "lexWords") ?? []]
         case ("POST", "/kbd"):
             if let o = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] {
                 Hub.shared.kbd = o

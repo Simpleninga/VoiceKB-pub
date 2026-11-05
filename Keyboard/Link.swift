@@ -37,6 +37,15 @@ enum Link {
         }.resume()
     }
 
+    /// 词库的词：[[词, 拼音键, 来源], …]。回调在主线程
+    static func lexWords(_ done: @escaping ([[String]]) -> Void) {
+        session.dataTask(with: url("/lex")) { data, _, _ in
+            let o = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+            let w = o?["words"] as? [[String]] ?? []
+            DispatchQueue.main.async { done(w) }
+        }.resume()
+    }
+
     static func putKbd(_ d: [String: Any]) {
         var r = URLRequest(url: url("/kbd"))
         r.httpMethod = "POST"

@@ -147,7 +147,7 @@ final class Dictation: ObservableObject {
     private func publish() {
         Hub.shared.app = [
             "state": state, "partial": partial, "result": resultText, "rseq": rseq, "rtime": rtime,
-            "sid": gen, "rsid": resultSID, "cuts": cutCount, "rcuts": resultCuts, "base": cutBase, "err": errText, "errtime": errTime, "keepUntil": min(deadline.timeIntervalSince1970, 4_000_000_000), "engine": engine.isRunning,
+            "sid": gen, "rsid": resultSID, "cuts": cutCount, "rcuts": resultCuts, "base": cutBase, "err": errText, "errtime": errTime, "lexv": UserDefaults.standard.string(forKey: "lexVer") ?? "", "keepUntil": min(deadline.timeIntervalSince1970, 4_000_000_000), "engine": engine.isRunning,
         ]
         KB.post(KB.nState)
     }
@@ -162,9 +162,32 @@ final class Dictation: ObservableObject {
     func refreshHot() {
         guard serviceReady else { return }
         Task {
-            if let r = try? await Server.call("GET", "/kb/v1/hot", timeout: 6), let w = r["words"] as? [String], !w.isEmpty {
-                UserDefaults.standard.set(w, forKey: "serverHot")
+            guard let r = try? await Server.call("GET", "/kb/v1/lexicon", timeout: 6), let w = r["words"] as? [[String: Any]], !w.isEmpty else { return }
+            let d = UserDefaults.standard
+            d.set(w.compactMap { $0["w"] as? String }, forKey: "serverHot")
+            d.set(w.compactMap { x -> [String]? in (x["w"] as? String).flatMap { a in (x["k"] as? String).map { [a, $0, x["src"] as? String ?? ""] } } }, forKey: "lexWords")
+            let rules = (r["rules"] as? [[String: Any]] ?? []).filter { $0["hard"] as? Bool == true }
+            d.set(rules.compactMap { x -> [String]? in (x["from"] as? String).flatMap { a in (x["to"] as? String).map { [a, $0] } } }, forKey: "lexRules")
+            d.set(r["ver"] as? String ?? "", forKey: "lexVer")
+            publish()      // 键盘看到版本变了会来取词
+        }
+    }
+
+    /// 词库里的硬规则和同音词：手机上当场改，不用联网、不用等润色
+    private func fixed(_ s: String) -> String {
+        let d = UserDefaults.standard
+        let rules = (d.array(forKey: "lexRules") as? [[String]] ?? []).compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
+        return AsrText.fix(s, rules: rules, words: d.stringArray(forKey: "serverHot") ?? [])
+    }
+
+    /// 键盘看到用户改了听写的字，把「听错 → 改成」交给服务器学；学到了马上取回来
+    private func learn(_ pairs: [[String]]) {
+        guard serviceReady, !pairs.isEmpty else { return }
+        Task {
+            for p in pairs where p.count == 4 {
+                _ = try? await Server.call("POST", "/kb/v1/learn", body: ["from": p[0], "to": p[1], "l": p[2], "r": p[3]])
             }
+            refreshHot()
         }
     }
 
@@ -223,6 +246,7 @@ final class Dictation: ObservableObject {
             preferBuiltInMic(s)
         }
         var input = engine.inputNode
+        applyDenoise(input)
         var fmt = input.outputFormat(forBus: 0)
         if fmt.sampleRate <= 0 || fmt.channelCount == 0 {
             // 这个引擎的输入格式卡在 0 Hz 不再更新（10-27 戴耳机后，同一个引擎重试十几分钟、隔几个小时都读到 0）：换一个全新的引擎对象再读一次。
@@ -230,6 +254,7 @@ final class Dictation: ObservableObject {
             input.removeTap(onBus: 0)
             engine = AVAudioEngine()
             input = engine.inputNode
+            applyDenoise(input)
             fmt = input.outputFormat(forBus: 0)
             let avail = s.availableInputs?.map { $0.portType.rawValue }.joined(separator: "+") ?? "无"
             log("麦克风格式 0 Hz，换了新引擎：现在 \(Int(fmt.sampleRate)) Hz \(fmt.channelCount) 声道；\(routeText())；可用输入 \(avail)；系统说有输入=\(s.isInputAvailable)")
@@ -242,10 +267,39 @@ final class Dictation: ObservableObject {
         let sink = self.sink
         input.installTap(onBus: 0, bufferSize: 4096, format: fmt) { buf, _ in sink.feed(buf) }
         engine.prepare()
-        try engine.start()
+        do {
+            try engine.start()
+        } catch where input.isVoiceProcessingEnabled {       // 不能因为降噪录不了音：关掉再来一次
+            log("开着背景降噪引擎起不来，关掉再试：\(error.localizedDescription)")
+            input.removeTap(onBus: 0)
+            try? input.setVoiceProcessingEnabled(false)
+            fmt = input.outputFormat(forBus: 0)
+            guard fmt.sampleRate > 0, fmt.channelCount > 0 else { throw error }
+            input.installTap(onBus: 0, bufferSize: 4096, format: fmt) { buf, _ in sink.feed(buf) }
+            engine.prepare()
+            try engine.start()
+        }
         engineRunning = true
-        log("录音引擎启动，后台待命（\(routeText())；\(Int(fmt.sampleRate)) Hz）")
+        log("录音引擎启动，后台待命（\(routeText())；\(Int(fmt.sampleRate)) Hz；降噪\(input.isVoiceProcessingEnabled ? "开" : "关")）")
         if AsrModel.shared.usable { XAsr.shared.preload(dir: AsrModel.shared.dir) }      // 先加载好，开口就能出字
+    }
+
+    /// 背景降噪：苹果的语音处理（压背景噪音、回声消除），要在引擎启动前、读麦克风格式前设好。
+    /// 只对这台手机自己放的声音有参考信号，电脑外放的人声只能压低一些。开着时别的 App 的音乐别被压低（.min）
+    private func applyDenoise(_ input: AVAudioInputNode) {
+        let on = UserDefaults.standard.object(forKey: "denoise") as? Bool ?? true
+        guard input.isVoiceProcessingEnabled != on else { return }
+        do {
+            try input.setVoiceProcessingEnabled(on)
+            if on { input.voiceProcessingOtherAudioDuckingConfiguration = .init(enableAdvancedDucking: false, duckingLevel: .min) }
+        } catch {
+            log("背景降噪没设上：\(error.localizedDescription)")
+        }
+    }
+
+    /// 设置里开关降噪：引擎重起才生效；正在录音就等下一次
+    func denoiseChanged() {
+        if engineRunning, state == "idle" { restartEngine() }
     }
 
     /// 当前音频路由，写进日志：以后出事一眼看出输入是不是手机麦克风、有没有掉进蓝牙通话模式（BluetoothHFP）
@@ -432,9 +486,11 @@ final class Dictation: ObservableObject {
             log("键盘：开始")
             ctxBefore = k["ctx"] as? String ?? ""
             if let h = k["hot"] as? [String], !h.isEmpty { UserDefaults.standard.set(Array(h.prefix(60)), forKey: "kbHot") }
+            learn(k["pairs"] as? [[String]] ?? [])
             startRecording()
         case "stop": log("键盘：停止（\(k["src"] as? String ?? "?")）"); stopRecording()
         case "cut": cut(upTo: k["n"] as? Int ?? 0, count: k["k"] as? Int)
+        case "learn": learn(k["pairs"] as? [[String]] ?? [])
         case "cancel": log("键盘：换了输入框，这次录音作废（\(k["src"] as? String ?? "?")）"); cancelRecording()
         default: break
         }
@@ -628,7 +684,7 @@ final class Dictation: ObservableObject {
         finished = true
         let ctx = ctxBefore, hints = altHints      // cleanup 会清掉上文，先取走
         cleanup()
-        let raw = partial.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = fixed(partial.trimmingCharacters(in: .whitespacesAndNewlines))
         let secs = Date().timeIntervalSince(recStart)
         if raw.isEmpty {
             if cutCount > 0 { complete(info: String(format: "录音 %.1f 秒", secs)); return }   // 冻结之后没再说话，前面的字已经在输入框里了

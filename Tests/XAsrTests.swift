@@ -18,6 +18,50 @@ final class XAsrTests: XCTestCase {
         XCTAssertEqual(AsrText.hotwords(["a/b", ":x", "  ", ""]), "a b/x")
     }
 
+    func testFixRules() {
+        let r = [("deep shake", "DeepSeek"), ("Cloud Code", "Claude Code"), ("小 IAPP", "小芽 App"), ("精一", "精益")]
+        XCTAssertEqual(AsrText.fix("用 deep shake 跑", rules: r, words: []), "用 DeepSeek 跑")
+        XCTAssertEqual(AsrText.fix("用Deep  Shake跑", rules: r, words: []), "用DeepSeek跑")
+        XCTAssertEqual(AsrText.fix("cloud code 改一下", rules: r, words: []), "Claude Code 改一下")
+        XCTAssertEqual(AsrText.fix("我的小IAPP和小 IAPP", rules: r, words: []), "我的小芽 App和小芽 App")
+        XCTAssertEqual(AsrText.fix("deep shaker 不是整词", rules: r, words: []), "deep shaker 不是整词")
+        XCTAssertEqual(AsrText.fix("精一求精", rules: [], words: []), "精一求精")
+    }
+
+    func testFixHomophones() {
+        XCTAssertEqual(AsrText.fix("打开易幻通后台", rules: [], words: ["医患通", "小芽"]), "打开医患通后台")
+        XCTAssertEqual(AsrText.fix("医患通已经对了", rules: [], words: ["医患通"]), "医患通已经对了")
+        XCTAssertEqual(AsrText.fix("小牙齿", rules: [], words: ["小芽"]), "小牙齿")      // 两个字的同音词不换
+        XCTAssertEqual(AsrText.fix("OpenCode", rules: [], words: ["医患通"]), "OpenCode")
+    }
+
+    func testCorrectionDiff() {
+        typealias P = CorrectionDiff.Pair
+        XCTAssertEqual(CorrectionDiff.pairs(old: "用 deep shake 跑一下", new: "用 DeepSeek 跑一下"),
+                       [P(from: "deep shake", to: "DeepSeek", left: "用 ", right: " 跑")])
+        XCTAssertEqual(CorrectionDiff.pairs(old: "Cloud Code 改", new: "Claude Code 改"),
+                       [P(from: "Cloud", to: "Claude", left: "", right: " C")])
+        XCTAssertEqual(CorrectionDiff.pairs(old: "打开易幻通后台", new: "打开医患通后台"),
+                       [P(from: "易幻", to: "医患", left: "打开", right: "通后")])
+        XCTAssertEqual(CorrectionDiff.pairs(old: "这是精一的", new: "这是荆一的"),
+                       [P(from: "精", to: "荆", left: "这是", right: "一的")])
+        XCTAssertEqual(CorrectionDiff.pairs(old: "前面易幻通中间deep后面", new: "前面医患通中间Deep后面").count, 2)
+        XCTAssertEqual(CorrectionDiff.pairs(old: "你好世界", new: "你好世界再见"), [])      // 接着往后打不是纠错
+        XCTAssertEqual(CorrectionDiff.pairs(old: "这个deep", new: "这个deep shake"), [])
+        XCTAssertEqual(CorrectionDiff.pairs(old: "今天天气不错", new: "完全不一样的一句话"), [])      // 重写不学
+        XCTAssertEqual(CorrectionDiff.pairs(old: "你好", new: "你好"), [])
+    }
+
+    func testEnglishExtraWords() {
+        let path = NSTemporaryDirectory() + "enwords-test.txt"
+        try? "deep\ndeeply\nclaude\n".write(toFile: path, atomically: true, encoding: .utf8)
+        let e = EnglishWords(path: path)!
+        e.extra = ["deepseek": "DeepSeek", "claudecode": "Claude Code"]
+        XCTAssertEqual(e.mixedWord("deepseek"), "DeepSeek")
+        XCTAssertEqual(e.complete("deep", limit: 3), ["DeepSeek", "deeply"])
+        XCTAssertEqual(e.complete("cla", limit: 3).first, "Claude Code")
+    }
+
     func testSegmentsReplaceIsCumulative() {
         var s = SpeechSegments()
         s.replace("你好世界")

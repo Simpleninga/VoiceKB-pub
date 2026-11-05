@@ -156,6 +156,18 @@ final class KeyboardSmokeTests: XCTestCase {
         vc.view.layoutIfNeeded()
     }
 
+    /// 词库的词：拼音完全对上就排第一，选下去能打进去；拼音对不上不打扰
+    func testLexiconWordComesFirst() {
+        let vc = makeKeyboard()
+        vc.lexZh = ["jingyi": ["词库词"]]
+        for c in "jingyi".map({ String($0) }) { tap(vc, c) }
+        XCTAssertEqual(candButtons(vc).first?.currentTitle, "词库词", "词库词排第一")
+        pickTitle(vc, "词库词")
+        XCTAssertEqual(vc.buffer, "", "整串拼音吃掉")
+        for c in "jing".map({ String($0) }) { tap(vc, c) }
+        XCTAssertNotEqual(candButtons(vc).first?.currentTitle, "词库词", "只打了一半不抢位")
+    }
+
     /// 个人学习：分两次选出「云朵」+「糕」→ 记成自造词，再打 yunduogao 第一个就是「云朵糕」；存到文件、新键盘实例也认；清空后就没了
     func testLearnsPhraseFromTwoPicks() {
         let vc = makeKeyboard()

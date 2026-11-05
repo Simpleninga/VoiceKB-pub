@@ -1582,7 +1582,9 @@ final class KeyboardViewController: UIInputViewController {
     private var panelList: [PinyinCandidate] = []
     private lazy var words: EnglishWords? = {
         guard let path = Bundle(for: KeyboardViewController.self).path(forResource: "enwords", ofType: "txt") else { return nil }
-        return EnglishWords(path: path)
+        let w = EnglishWords(path: path)
+        w?.extra = UserDefaults.standard.dictionary(forKey: "lexEn") as? [String: String] ?? [:]
+        return w
     }()
     private lazy var emoji: EmojiIndex? = {
         guard let path = Bundle(for: KeyboardViewController.self).path(forResource: "emoji", ofType: "txt") else { return nil }
@@ -1635,6 +1637,37 @@ final class KeyboardViewController: UIInputViewController {
             }
         }
         scheduleUserSave()
+    }
+
+    /// 词库的中文词：拼音 → 词（出候选时排第一）。市面新词不在内，别抢用户常用的字
+    var lexZh = UserDefaults.standard.dictionary(forKey: "lexZh") as? [String: [String]] ?? [:]
+
+    /// 词库下发的词：中文进自造词和 lexZh（打 yihuantong 就有医患通），英文进联想（打 deeps 就有 DeepSeek）
+    private func syncLex(_ ver: String) {
+        Link.lexWords { [weak self] list in
+            guard let self, !list.isEmpty else { return }
+            UserDefaults.standard.set(ver, forKey: "lexVer")
+            var en: [String: String] = [:], zh: [(String, [UInt8])] = [], top: [String: [String]] = [:]
+            for p in list where p.count >= 2 && !p[1].isEmpty {
+                if p[0].unicodeScalars.allSatisfy({ (0x4E00...0x9FFF).contains($0.value) }) {
+                    zh.append((p[0], Array(p[1].utf8)))
+                    if p.count < 3 || p[2] != "trend" { top[p[1], default: []].append(p[0]) }
+                } else if p[0].allSatisfy(\.isASCII) {
+                    en[p[1]] = p[0]
+                }
+            }
+            UserDefaults.standard.set(en, forKey: "lexEn")
+            UserDefaults.standard.set(top, forKey: "lexZh")
+            self.words?.extra = en
+            self.lexZh = top
+            guard let e = self.engine, let u = e.user else { return }
+            self.onEngine {
+                for (w, k) in zh where (2...6).contains(w.unicodeScalars.count) && !e.hasWord(k, w) && u.count(of: .init(key: k, word: w)) == 0 {
+                    u.addPhrase(key: k, word: w)
+                }
+            }
+            self.scheduleUserSave()
+        }
     }
 
     private func scheduleUserSave() {
@@ -1704,6 +1737,7 @@ final class KeyboardViewController: UIInputViewController {
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
         HostApp.harvest()
+        noteEdit()
         refreshReturn()
         if visible { needForeignCheck = true }
         if dropForeignVoice() { render() }        // 键盘没收起、直接换到了另一个输入框
@@ -1718,6 +1752,7 @@ final class KeyboardViewController: UIInputViewController {
     override func selectionDidChange(_ textInput: UITextInput?) {
         super.selectionDidChange(textInput)
         HostApp.harvest()
+        noteEdit()
     }
 
     override func viewDidLoad() {
@@ -1786,6 +1821,7 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        flushWatch()
         if userSave != nil { saveUser() }      // 键盘收起：没来得及存的学习记录马上存（扩展随时可能被系统结束）
         if let r = rootView {
             r.cancelAll()
@@ -2699,6 +2735,8 @@ final class KeyboardViewController: UIInputViewController {
     /// 发出去了 / 输入框被清空了：顶栏回到最开始的样子（麦克风 + 齿轮 + 收起），上一句的联想、撤销都不留（用户 10-24：
     /// 「点了发送以后输入法上面不要再显示任何词，直接显示最开始的按钮和收起箭头」）
     private func resetAfterSend() {
+        flushWatch()
+        watchBase = ""
         ctxTail = ""
         predictions = []
         if !recordingNow, !live.isEmpty { dead = liveSID; live = "" }
@@ -2789,13 +2827,18 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     /// 出候选（只读引擎和词表，后台线程上跑也行）
-    private static func makeList(_ e: PinyinEngine?, _ words: EnglishWords?, _ emoji: EmojiIndex?, _ buf: String, chinese: Bool, nine: Bool, ctx: String?,
+    private static func makeList(_ e: PinyinEngine?, _ words: EnglishWords?, _ emoji: EmojiIndex?, _ lex: [String: [String]], _ buf: String, chinese: Bool, nine: Bool, ctx: String?,
                                  limit: Int, expanded: Bool) -> [PinyinCandidate] {
         if chinese {
             let r = nine
                 ? (e?.t9Candidates(buf, limit: limit, expanded: expanded, ctx: ctx) ?? [])
                 : (e?.candidates(buf, limit: limit, expanded: expanded, ctx: ctx) ?? [])
             var out = r.isEmpty ? [PinyinCandidate(text: buf.replacingOccurrences(of: "'", with: ""), consume: buf.count, kind: .raw)] : r
+            // 词库的词：拼音完全对上就排第一。自造词只进整句，两个字的词（智谱、混元）拼不过常用词，根本出不来
+            if !nine, let ws = lex[buf.replacingOccurrences(of: "'", with: "")] {
+                out.removeAll { ws.contains($0.text) }
+                out.insert(contentsOf: ws.map { PinyinCandidate(text: $0, consume: buf.count, kind: .raw) }, at: 0)
+            }
             // 中英混输（二期）：打的字母本身是个常见英文词 / 缩写（wifi、ok、ppt…）就加一条英文候选：拼音盖不住整串时排第一，盖得住就排第三
             if !nine, let en = words?.mixedWord(buf) {
                 let cand = PinyinCandidate(text: en, consume: buf.count, kind: .raw)
@@ -2819,8 +2862,8 @@ final class KeyboardViewController: UIInputViewController {
 
     /// 当场算（排在后台正在算的后面），展开面板、按空格前候选还没跟上时用
     private func candidateList(limit: Int, expanded: Bool = false) -> [PinyinCandidate] {
-        let e = engine, w = words, em = emoji, buf = buffer, zh = chinese, nine = nineSyll != nil, ctx = contextWord()
-        return engineQueue.sync { Self.makeList(e, w, em, buf, chinese: zh, nine: nine, ctx: ctx, limit: limit, expanded: expanded) }
+        let e = engine, w = words, em = emoji, lex = lexZh, buf = buffer, zh = chinese, nine = nineSyll != nil, ctx = contextWord()
+        return engineQueue.sync { Self.makeList(e, w, em, lex, buf, chinese: zh, nine: nine, ctx: ctx, limit: limit, expanded: expanded) }
     }
 
     // MARK: 引擎在后台算（一期④）：按键时气泡和拼音行先出来，候选几毫秒后到；连着快打只算最新的输入串
@@ -2857,14 +2900,14 @@ final class KeyboardViewController: UIInputViewController {
         latestGen &+= 1
         let gen = latestGen
         genLock.unlock()
-        let e = engine, w = words, em = emoji, buf = buffer, ctx = contextWord()
+        let e = engine, w = words, em = emoji, lex = lexZh, buf = buffer, ctx = contextWord()
         engineQueue.async { [weak self] in
             guard let self else { return }
             self.genLock.lock()
             let stale = gen != self.latestGen
             self.genLock.unlock()
             if stale { return }                  // 后面又按了键，这个不用算了
-            let r = Self.makeList(e, w, em, buf, chinese: true, nine: false, ctx: ctx, limit: 40, expanded: false)
+            let r = Self.makeList(e, w, em, lex, buf, chinese: true, nine: false, ctx: ctx, limit: 40, expanded: false)
             DispatchQueue.main.async {
                 guard self.candKey == key else { return }
                 self.cands = r
@@ -2969,6 +3012,7 @@ final class KeyboardViewController: UIInputViewController {
             failedPolls = 0
         }
         apply(s)
+        if s.ok, let v = s.app["lexv"] as? String, !v.isEmpty, v != UserDefaults.standard.string(forKey: "lexVer") { syncLex(v) }
         // 录音归属只由「屏幕上这个键盘」处理：后台还活着的另一个 App 的键盘实例也会被通知叫醒走到这里，
         // 以前它们照样「认领」和「作废」，用户开着两个 App 的输入框时，刚按开始就被对方作废了
         if visible, s.ok {
@@ -3063,6 +3107,9 @@ final class KeyboardViewController: UIInputViewController {
         if let c = contextBefore(), !c.isEmpty { d["ctx"] = String(c.suffix(200)) }
         let hot = learnedWords(limit: 60)
         if !hot.isEmpty { d["hot"] = hot }
+        let p = takePairs()      // 上一段话改的字跟着这条指令走（两条指令连着发，App 只看得到后一条）
+        if !p.isEmpty { d["pairs"] = p }
+        watchBase = ""
         return d
     }
 
@@ -3463,11 +3510,55 @@ final class KeyboardViewController: UIInputViewController {
         if liveFinal, !stillAtEnd() { dead = sid; live = ""; refreshBar(); return }   // 光标挪走了 / 用户改过，别乱删
         setLive(t)
         liveFinal = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in   // 输入框的文字稍后才读得到
+            if self?.live == t { self?.watch(t) }
+        }
         if let e = engine, let lm = e.lm, let u = e.user {      // 语音整理好的话也学（你常说的词、搭配）
             onEngine { u.learnText(lm, t) }
             scheduleUserSave()
         }
         refreshBar()
+    }
+
+    // MARK: 学纠错：听写打进去以后用户改了哪些词，把「听错 → 改成」交给服务器（App 这时一定在待命）
+    private var watchBase = ""                      // 这段听写上次结算时的样子
+    private var watchNow = ""                       // 现在的样子
+    private var watchHead = "", watchTail = ""      // 这段前后本来就有的字，比较时去掉
+    private var watchDoc: UUID?
+    private var watchTimer: Timer?
+
+    private func watch(_ t: String) {
+        let c = contextBefore() ?? ""
+        guard c.hasSuffix(t) else { watchBase = ""; return }      // 太长读不全：宁可不学，比出来也是错的
+        watchHead = String(c.dropLast(t.count))
+        watchTail = textDocumentProxy.documentContextAfterInput ?? ""
+        watchBase = t
+        watchNow = t
+        watchDoc = currentDoc()
+    }
+
+    private func noteEdit() {
+        guard !watchBase.isEmpty, !recordingNow, currentDoc() == watchDoc else { return }
+        var s = (contextBefore() ?? "") + (textDocumentProxy.documentContextAfterInput ?? "")
+        guard s.hasPrefix(watchHead), s.hasSuffix(watchTail), s.count >= watchHead.count + watchTail.count else { return }
+        s = String(s.dropFirst(watchHead.count).dropLast(watchTail.count))
+        guard !s.isEmpty, s != watchNow else { return }      // 空了 = 发出去了，用上一次看到的样子结算
+        watchNow = s
+        watchTimer?.invalidate()
+        watchTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in self?.flushWatch() }
+    }
+
+    private func takePairs() -> [[String]] {
+        watchTimer?.invalidate()
+        guard !watchBase.isEmpty, watchNow != watchBase else { return [] }
+        let p = CorrectionDiff.pairs(old: watchBase, new: watchNow)
+        watchBase = watchNow
+        return p.prefix(3).map { [$0.from, $0.to, $0.left, $0.right] }
+    }
+
+    private func flushWatch() {
+        let p = takePairs()
+        if !p.isEmpty { send("learn", ["pairs": p]) }
     }
 
     /// 光标是不是还在这段听写文字的后面（读不到上下文就信它）
@@ -3500,6 +3591,7 @@ final class KeyboardViewController: UIInputViewController {
     /// 用户自己打了字 / 点了标点 / 删除：说话中就冻结已经打进去的；说完在等结果时就不再替换了，免得删错
     private func userTyped() {
         if recordingNow { freeze() } else if !liveFinal { dead = liveSID }
+        DispatchQueue.main.async { [weak self] in self?.noteEdit() }
     }
 
     private func undoVoice() {
