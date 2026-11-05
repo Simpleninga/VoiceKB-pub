@@ -58,6 +58,32 @@ enum Server {
         return (t, r["ms"] as? Int ?? 0)
     }
 
+    /// 取模型文件的一段（esp-link 转发时不带 Range 头，所以放查询串）。
+    /// 地址倒着试：第一个是北京中转，只有 1M，走它下完要半小时还挤占遥控器的线路。只走 Wi-Fi
+    static func modelChunk(_ path: String, off: Int, len: Int) async throws -> Data {
+        let k = key
+        guard !k.isEmpty else { throw Fail(msg: "安装包里没有服务密钥") }
+        var lastErr: Error = Fail(msg: "连不上服务器")
+        for _ in 0..<3 {      // 跨太平洋的线偶尔断一下，一片重试几次，不用整个重来
+            for h in hosts.reversed() {
+                guard let url = URL(string: "http://\(h)/kb/v1/model/\(path)?key=\(k)&off=\(off)&len=\(len)") else { continue }
+                var req = URLRequest(url: url, timeoutInterval: 60)
+                req.allowsExpensiveNetworkAccess = false
+                req.allowsConstrainedNetworkAccess = false
+                do {
+                    let (data, resp) = try await URLSession.shared.data(for: req)
+                    if (resp as? HTTPURLResponse)?.statusCode == 200 { return data }
+                    lastErr = Fail(msg: "服务器返回 \((resp as? HTTPURLResponse)?.statusCode ?? 0)")
+                } catch {
+                    lastErr = error
+                    if (error as? URLError)?.networkUnavailableReason != nil { throw error }      // 不在 Wi-Fi 上，重试也没用
+                }
+            }
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        throw lastErr
+    }
+
     /// 开始录音时通知服务器：先把润色用的进程起好，说完润色省掉启动的约 1 秒；失败不影响
     static func warm(style: String) async {
         _ = try? await call("POST", "/kb/v1/warm", body: ["style": style], timeout: 5)

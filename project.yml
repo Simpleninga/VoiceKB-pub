@@ -14,9 +14,11 @@ targets:
   VoiceKB:
     type: application
     platform: iOS
-    sources: [App, Shared]
+    sources: [App, Shared, Asr]
     dependencies:
       - target: VoiceKBKeyboard
+      - framework: Vendor/SherpaOnnxC.xcframework    # CI 下载（不进 git），见 ios.yml
+        embed: true
     info:
       path: App/Info.plist
       properties:
@@ -68,9 +70,12 @@ targets:
       - path: Keyboard
         excludes: ["Info.plist"]
       - Shared
+      - Asr
       - Tests
     dependencies:
       - target: VoiceKB
+      - framework: Vendor/SherpaOnnxC.xcframework
+        embed: true
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

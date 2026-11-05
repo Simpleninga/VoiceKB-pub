@@ -7,16 +7,23 @@ import SwiftUI
 final class TapSink: @unchecked Sendable {
     private let lock = NSLock()
     private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var toXAsr = false
+    private let resampler = Resampler16k()
     private var lastBeat: TimeInterval = 0
 
     func set(_ r: SFSpeechAudioBufferRecognitionRequest?) {
         lock.lock(); request = r; lock.unlock()
     }
 
+    func setXAsr(_ on: Bool) {
+        lock.lock(); toXAsr = on; lock.unlock()
+    }
+
     func feed(_ buf: AVAudioPCMBuffer) {
-        lock.lock(); let r = request; lock.unlock()
+        lock.lock(); let r = request, x = toXAsr; lock.unlock()
         r?.append(buf)
-        if r != nil { Hub.shared.push(levels: Self.levels(of: buf)) }   // 说话时才算音量，待命时不费这个电
+        if x { XAsr.shared.feed(resampler.convert(buf)) }
+        if r != nil || x { Hub.shared.push(levels: Self.levels(of: buf)) }   // 说话时才算音量，待命时不费这个电
         let now = Date().timeIntervalSince1970
         if now - lastBeat >= 1 { lastBeat = now; Hub.shared.hb = now }   // 每秒一次心跳：键盘靠它知道 App 还活着
     }
@@ -39,7 +46,7 @@ final class TapSink: @unchecked Sendable {
     }
 }
 
-/// 主 App 的核心：录音引擎（后台保活）+ 苹果自带语音识别 + 可选的服务器润色，跟键盘用本机回环 HTTP（Bridge）+ Darwin 通知对话。
+/// 主 App 的核心：录音引擎（后台保活）+ 语音识别（默认 X-ASR，苹果自带的做退路）+ 可选的服务器润色，跟键盘用本机回环 HTTP（Bridge）+ Darwin 通知对话。
 @MainActor
 final class Dictation: ObservableObject {
     static let shared = Dictation()
@@ -62,6 +69,7 @@ final class Dictation: ObservableObject {
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
+    private var usingXAsr = false            // 这次录音走的是 X-ASR（设置里选的 + 模型下好了）
     private var gen = 0                      // 第几次录音（也是发给键盘的 sid）
     private var taskSeq = 0                  // 这次录音里第几个识别任务，旧任务的回调靠它认出来丢掉
     private var taskStart = Date()
@@ -119,6 +127,8 @@ final class Dictation: ObservableObject {
         }
         refreshPerms()
         refreshHot()
+        XAsr.shared.log = { s in Task { @MainActor in Dictation.shared.log(s) } }
+        AsrModel.shared.ensure()
         publish()
     }
 
@@ -159,13 +169,13 @@ final class Dictation: ObservableObject {
     }
 
     /// 给识别器的提示词：服务器的常用词表 + 键盘里我用得最多的词（最近一次说话时键盘带来的），去重，最多 100 个
-    private func hotwords() -> [String] {
+    private func hotwords(limit: Int = 100) -> [String] {
         let d = UserDefaults.standard
         var seen = Set<String>(), out: [String] = []
         for w in (d.stringArray(forKey: "serverHot") ?? []) + (d.stringArray(forKey: "kbHot") ?? []) where !w.isEmpty && seen.insert(w).inserted {
             out.append(w)
         }
-        return Array(out.prefix(100))
+        return Array(out.prefix(limit))      // 苹果文档说最多 100 个；X-ASR 没这个限制
     }
 
     func ensurePermissions() async -> Bool {
@@ -180,7 +190,7 @@ final class Dictation: ObservableObject {
             }
         }
         refreshPerms()
-        if !micOK || !speechOK {
+        if !micOK || (!speechOK && !AsrModel.shared.usable) {
             fail("没有麦克风或语音识别权限：到 设置 → 芽音 里打开")
             return false
         }
@@ -235,6 +245,7 @@ final class Dictation: ObservableObject {
         try engine.start()
         engineRunning = true
         log("录音引擎启动，后台待命（\(routeText())；\(Int(fmt.sampleRate)) Hz）")
+        if AsrModel.shared.usable { XAsr.shared.preload(dir: AsrModel.shared.dir) }      // 先加载好，开口就能出字
     }
 
     /// 当前音频路由，写进日志：以后出事一眼看出输入是不是手机麦克风、有没有掉进蓝牙通话模式（BluetoothHFP）
@@ -264,6 +275,7 @@ final class Dictation: ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         engineRunning = false
         Hub.shared.hb = 0
+        XAsr.shared.unload()
         publish()
     }
 
@@ -468,7 +480,10 @@ final class Dictation: ObservableObject {
 
     private func beginRecording() {
         guard state == "idle" else { return }
-        guard let recognizer, recognizer.isAvailable else { fail("语音识别现在不可用"); return }
+        let useXAsr = AsrModel.shared.usable
+        if !useXAsr {
+            guard let recognizer, recognizer.isAvailable else { fail("语音识别现在不可用"); return }
+        }
         if engine.isRunning, Date().timeIntervalSince1970 - Hub.shared.hb > 3 {      // 引擎开着但几秒没收到声音：这次录出来只会是「没听到内容」，先重启
             log("录音前发现引擎没有声音进来，重启")
             engine.inputNode.removeTap(onBus: 0)
@@ -484,7 +499,7 @@ final class Dictation: ObservableObject {
         altHints = []
         Hub.shared.clearLevels()
         quickRestarts = 0
-        startTask(recognizer)
+        if useXAsr { startXAsr() } else if let recognizer { startTask(recognizer) }
         partial = ""
         state = "recording"
         recStart = Date()
@@ -523,6 +538,19 @@ final class Dictation: ObservableObject {
         sink.set(req)
     }
 
+    /// X-ASR：一次录音一路流，出来的文字是累积的；声音由 TapSink 转成 16 kHz 喂给它
+    private func startXAsr() {
+        usingXAsr = true
+        taskSeq += 1
+        let t = taskSeq
+        XAsr.shared.begin(dir: AsrModel.shared.dir, hotwords: AsrText.hotwords(hotwords(limit: 200))) { [weak self] text, isFinal, err in
+            DispatchQueue.main.async {      // 不用 Task：文字要按出来的顺序到
+                MainActor.assumeIsolated { self?.onRecognition(t, text: text, isFinal: isFinal, err: err, hints: []) }
+            }
+        }
+        sink.setXAsr(true)
+    }
+
     func stopRecording() {
         if pendingStart { pendingStart = false; return }    // 还没开始就松手了
         guard state == "recording" else { return }
@@ -530,9 +558,14 @@ final class Dictation: ObservableObject {
         Hub.shared.clearLevels()
         publish()
         autoStop?.invalidate()
-        request?.endAudio()
+        if usingXAsr {
+            sink.setXAsr(false)
+            XAsr.shared.end()
+        } else {
+            request?.endAudio()
+        }
         finishTimer?.invalidate()
-        finishTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
+        finishTimer = Timer.scheduledTimer(withTimeInterval: usingXAsr ? 8 : 5, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.finish() }   // 识别迟迟不给最终结果：用最后一次的中间结果
         }
     }
@@ -549,10 +582,11 @@ final class Dictation: ObservableObject {
 
     private func onRecognition(_ t: Int, text: String?, isFinal: Bool, err: String?, hints: [String]) {
         guard t == taskSeq, !finished else { return }
+        if usingXAsr, let err { fail(err); return }
         for h in hints where !altHints.contains(h) { altHints.append(h) }
         if altHints.count > 12 { altHints.removeFirst(altHints.count - 12) }
         if let text, !text.isEmpty {
-            if segs.update(text) { log("停顿后识别器从头重来，前面的话已接上") }
+            if usingXAsr { segs.replace(text) } else if segs.update(text) { log("停顿后识别器从头重来，前面的话已接上") }
             partial = SpeechSegments.remainder(segs.text, skipping: cutBase)
             if state == "recording" { publish() }
         }
@@ -582,6 +616,11 @@ final class Dictation: ObservableObject {
         task = nil
         sink.set(nil)
         request = nil
+        if usingXAsr {
+            sink.setXAsr(false)
+            XAsr.shared.cancel()      // 已经正常收尾的话这里什么也不做
+            usingXAsr = false
+        }
     }
 
     private func finish() {

@@ -4,6 +4,8 @@ import SwiftUI
 /// 所有 @AppStorage 的 key 跟旧版首页完全一致，老用户的设置原样保留。
 struct SettingsView: View {
     @ObservedObject var d: Dictation
+    @ObservedObject private var model = AsrModel.shared
+    @AppStorage("asrEngine") private var engine = "xasr"
     @AppStorage("keepMin") private var keepMin = 30
     @AppStorage("onDevice") private var onDevice = false
     @AppStorage("polish") private var polish = true
@@ -27,12 +29,37 @@ struct SettingsView: View {
 
                 HStack(spacing: 12) {
                     IconBadge(systemImage: "cpu", color: Color(uiColor: .systemTeal))
-                    Toggle("只用本机识别", isOn: $onDevice)
+                    Picker("识别引擎", selection: $engine) {
+                        Text("X-ASR").tag("xasr")
+                        Text("苹果").tag("apple")
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                if engine == "xasr" {
+                    LabeledContent {
+                        Text(XAsr.shared.gaveUp ? "连续出错，暂用苹果识别" : model.status)
+                            .foregroundStyle(model.ready && !XAsr.shared.gaveUp ? Brand.deep : Color.secondary)
+                    } label: {
+                        HStack(spacing: 12) {
+                            IconBadge(systemImage: "arrow.down.circle", color: Color(uiColor: .systemBlue))
+                            Text("语音模型")
+                        }
+                    }
+                } else {
+                    HStack(spacing: 12) {
+                        IconBadge(systemImage: "iphone", color: Color(uiColor: .systemGray))
+                        Toggle("只用本机识别", isOn: $onDevice)
+                    }
                 }
             } header: {
                 Text("语音")
             } footer: {
-                Text(d.onDeviceOK ? "离线识别，声音不出手机" : "这台设备不支持，会走苹果云端")
+                if engine == "xasr" {
+                    Text("中英混说更准，在手机上识别，声音不出手机。模型约 170MB，连 Wi-Fi 时自动下载，下好之前先用苹果识别")
+                } else {
+                    Text(d.onDeviceOK ? "离线识别，声音不出手机" : "这台设备不支持，会走苹果云端")
+                }
             }
 
             Section {
@@ -81,6 +108,10 @@ struct SettingsView: View {
         }
         .navigationTitle("设置")
         .task { serviceMsg = await Server.check() ?? "正常" }
+        .onChange(of: engine) { _, _ in
+            XAsr.shared.resetTries()
+            AsrModel.shared.ensure()
+        }
     }
 
     private var version: String {

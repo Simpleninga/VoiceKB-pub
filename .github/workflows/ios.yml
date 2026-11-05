@@ -15,6 +15,27 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      # 本机语音识别：sherpa-onnx 官方发到 pub.dev 的 iOS 动态框架（含 onnxruntime，省得从源码编 20 分钟）；锁版本和哈希。
+      # X-ASR 模型只给下面的端到端测试用，App 里的模型是第一次打开时从服务器下的
+      - name: Fetch sherpa-onnx framework and X-ASR model
+        run: |
+          curl -fsSL -o /tmp/so.tgz https://pub.dev/api/archives/sherpa_onnx_ios-2.0.1.tar.gz
+          echo "1858f3710c1d9da2ed880a65d7524fa5748c4f51b99740d9ca86ee210f74cada  /tmp/so.tgz" | shasum -a 256 -c -
+          mkdir -p /tmp/so Vendor
+          tar xzf /tmp/so.tgz -C /tmp/so
+          cp -R /tmp/so/ios/sherpa_onnx_ios/SherpaOnnxC.xcframework Vendor/
+          M=sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05
+          curl -fsSL -o /tmp/m.tbz "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$M.tar.bz2"
+          tar xjf /tmp/m.tbz -C /tmp
+          mv /tmp/$M /tmp/xasr
+          python3 -m venv /tmp/v
+          /tmp/v/bin/pip install -q sentencepiece
+          /tmp/v/bin/python -c "
+          import sentencepiece as s
+          p = s.SentencePieceProcessor(model_file='/tmp/xasr/bpe.model')
+          open('/tmp/xasr/bpe.vocab', 'w').write(''.join(f'{p.id_to_piece(i)}\\t{p.get_score(i)}\\n' for i in range(p.get_piece_size())))"
+          cp tools/asr_test.wav /tmp/xasr/test.wav
+
       # 拼音引擎：Swift 版（键盘里用的）和 Python 参考版（tools/pyengine.py）对拍，输出必须一字不差；第二轮带上个人学习的样本（tools/user_test.txt）
       - name: Pinyin engine parity (Swift vs Python)
         run: |
@@ -69,7 +90,7 @@ jobs:
           echo "simulator $UDID"
           xcodebuild test -project VoiceKB.xcodeproj -scheme VoiceKBTests -destination "id=$UDID" \
             -derivedDataPath build-test CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" 2>&1 \
-            | tee /tmp/xct.log | grep -E "Test Case .*(passed|failed)|error:|XCTAssert|Executed [0-9]+ tests" | tail -120
+            | tee /tmp/xct.log | grep -E "Test Case .*(passed|failed)|error:|XCTAssert|Executed [0-9]+ tests|XASR:" | tail -120
 
       - uses: actions/upload-artifact@v4
         if: always()

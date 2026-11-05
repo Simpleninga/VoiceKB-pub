@@ -13,6 +13,7 @@ struct VoiceKBApp: App {
                     if p == .active {
                         Bridge.shared.start()
                         d.refreshHot()
+                        AsrModel.shared.ensure()
                     }
                 }
         }

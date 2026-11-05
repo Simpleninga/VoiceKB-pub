@@ -18,6 +18,11 @@ struct SpeechSegments {
         return reset
     }
 
+    /// 识别器给的就是从头到现在的全部文字（X-ASR）：没有「从头重来」这回事，直接换掉
+    mutating func replace(_ new: String) {
+        current = new
+    }
+
     /// 识别器这个任务结束了（要接着开新任务）：这一段定稿
     mutating func commitCurrent() {
         committed += current
