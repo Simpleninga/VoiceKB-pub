@@ -1417,6 +1417,7 @@ final class PanelSide: UIView {
 
 final class CandidatePanel: TouchFirstScroll {
     var onPick: ((Int) -> Void)?
+    var highlightFirst = true      // 候选的第一个是首选、标绿；符号页不用
     private var pool: [KeyButton] = []
     private var items: [String] = []
 
@@ -1448,7 +1449,7 @@ final class CandidatePanel: TouchFirstScroll {
         }
         for (i, b) in pool.enumerated() {
             b.setTitle(i < new.count ? new[i] : nil, for: .normal)
-            b.setTitleColor(i == 0 ? Brand.green : .label, for: .normal)
+            b.setTitleColor(i == 0 && highlightFirst ? Brand.green : .label, for: .normal)
             b.isHidden = i >= new.count
         }
         setContentOffset(.zero, animated: false)
@@ -1470,6 +1471,59 @@ final class CandidatePanel: TouchFirstScroll {
 
     @objc private func tapped(_ b: UIButton) { onPick?(b.tag) }
     @objc private func tappedNear(_ b: UIButton, event: UIEvent?) { if tapIsNear(b, event, busy: isTracking || isDragging || isDecelerating) { onPick?(b.tag) } }
+}
+
+/// 符号页左边的分类列：类多，可上下滑（样子和展开面板的 PanelSide 一样）
+final class SymbolTabs: TouchFirstScroll {
+    var onPick: ((Int) -> Void)?
+    private var chips: [UIButton] = []
+
+    init(titles: [String], selected: Int) {
+        super.init(frame: .zero)
+        delaysContentTouches = false
+        showsVerticalScrollIndicator = false
+        backgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.17, alpha: 1) : UIColor(white: 0.88, alpha: 1) }
+        accessibilityIdentifier = "symbolTabs"
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: contentLayoutGuide.topAnchor, constant: 4),
+            stack.bottomAnchor.constraint(equalTo: contentLayoutGuide.bottomAnchor, constant: -4),
+            stack.leadingAnchor.constraint(equalTo: contentLayoutGuide.leadingAnchor, constant: 4),
+            stack.trailingAnchor.constraint(equalTo: contentLayoutGuide.trailingAnchor, constant: -4),
+            stack.widthAnchor.constraint(equalTo: frameLayoutGuide.widthAnchor, constant: -8),
+        ])
+        for (i, t) in titles.enumerated() {
+            let b = UIButton(type: .custom)
+            b.tag = i
+            b.setTitle(t, for: .normal)
+            b.layer.cornerRadius = 7
+            b.heightAnchor.constraint(equalToConstant: 38).isActive = true
+            b.addTarget(self, action: #selector(tapped(_:)), for: .touchUpInside)
+            stack.addArrangedSubview(b)
+            chips.append(b)
+        }
+        mark(selected)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) 不用") }
+
+    private func mark(_ i: Int) {
+        for b in chips {
+            let on = b.tag == i
+            b.titleLabel?.font = .systemFont(ofSize: 15, weight: on ? .semibold : .regular)
+            b.setTitleColor(on ? Brand.green : .label, for: .normal)
+            b.backgroundColor = on ? UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.30, alpha: 1) : .white } : .clear
+        }
+    }
+
+    @objc private func tapped(_ b: UIButton) {
+        mark(b.tag)
+        onPick?(b.tag)
+    }
 }
 
 /// 语音键盘：语音听写（主 App 录音，这里收字）+ 中文拼音 / 英文 / 数字符号三套打字键盘。
@@ -1653,9 +1707,10 @@ final class KeyboardViewController: UIInputViewController {
     func keyUnder(_ p: CGPoint) -> KeyButton? { rootView.flatMap { r in r.key(at: r.convert(p, from: view)) } }
 
     // MARK: 打字
-    private enum Layer { case letters, numbers }
+    private enum Layer { case letters, numbers, symbols }
     private enum Shift { case off, once, caps }
     private var layer = Layer.letters
+    private var symbolTab = 0                    // 符号页上次看的分类
     private var chinese = UserDefaults.standard.object(forKey: "zh") as? Bool ?? true
     private var shift = Shift.off
     private var lastShiftTap = Date.distantPast
@@ -2192,6 +2247,7 @@ final class KeyboardViewController: UIInputViewController {
         switch layer {
         case .letters: buildLetters()
         case .numbers: buildNumbers()
+        case .symbols: buildSymbols()
         }
         applyGridMode()
         rootView?.invalidateKeys()
@@ -2224,16 +2280,19 @@ final class KeyboardViewController: UIInputViewController {
         walk(keyArea)
     }
 
-    /// 前三排（字母 / 数字符号）一样高、尽量大；最下面一排矮一点。底排的高度优先，空间不够时三排字母一起让
+    /// 前三排（字母 / 数字符号）一样高、尽量大；最下面一排矮一点。底排的高度优先，空间不够时三排字母一起让。
+    /// 符号页只有「分类 + 符号」一大块加底排，大块吃掉底排以外的高度
     private func sizeRows() {
         let rows = keyArea.arrangedSubviews
-        guard rows.count == 4 else { return }
+        guard rows.count == 4 || layer == .symbols, let last = rows.last else { return }
         let extra = tiled ? Self.rowGap : 0      // 格子比键面高出一条缝
-        let first = rows[0].heightAnchor.constraint(equalToConstant: Self.letterRowH + extra)
-        first.priority = UILayoutPriority(700)
-        first.isActive = true
-        for r in rows[1...2] { r.heightAnchor.constraint(equalTo: rows[0].heightAnchor).isActive = true }
-        let bottom = rows[3].heightAnchor.constraint(equalToConstant: Self.bottomRowH + extra)
+        if layer != .symbols {
+            let first = rows[0].heightAnchor.constraint(equalToConstant: Self.letterRowH + extra)
+            first.priority = UILayoutPriority(700)
+            first.isActive = true
+            for r in rows[1...2] { r.heightAnchor.constraint(equalTo: rows[0].heightAnchor).isActive = true }
+        }
+        let bottom = last.heightAnchor.constraint(equalToConstant: Self.bottomRowH + extra)
         bottom.priority = UILayoutPriority(999)
         bottom.isActive = true
     }
@@ -2327,19 +2386,49 @@ final class KeyboardViewController: UIInputViewController {
             ? [sym("，"), sym("。"), sym("？"), sym("！"), sym("、"), sym("："), sym("；"), sym("“"), sym("”"), sym("……")]
             : "-/:;()$&@\"".map { sym(String($0)) }
         let r3 = chinese
-            ? [sym("（"), sym("）"), sym("《"), sym("》"), sym("【"), sym("】"), sym("—"), sym("～")]
-            : [".", ",", "?", "!", "'", "%", "_", "="].map { sym($0) }
+            ? [sym("（"), sym("）"), sym("+"), sym("-"), sym("="), sym("%"), sym("@")]
+            : [".", ",", "?", "!", "'", "+", "="].map { sym($0) }
         keyArea.addArrangedSubview(hRow(digits, equal: true))
         keyArea.addArrangedSubview(hRow(r2, equal: true))
+        let more = key("符号", isFunction: true, font: 14) { [weak self] in self?.switchLayer(.symbols) }
         let del = deleteKey()
-        keyArea.addArrangedSubview(hRow(r3 + [del]))
+        keyArea.addArrangedSubview(hRow([more] + r3 + [del]))
         for k in r3.dropFirst() { k.widthAnchor.constraint(equalTo: r3[0].widthAnchor).isActive = true }
+        width(more, r3[0], 1.4)
         width(del, r3[0], 1.4)
         addBottomRow(first: "ABC", unit: digits[0]) { [weak self] in self?.switchLayer(.letters) }
     }
 
-    /// 最下面一排：[123/ABC] [🌐] [中/英] [空格（按住说话）] [，。] [换行]，直接加进 keyArea
-    private func addBottomRow(first: String, unit: UIView, _ firstAction: @escaping () -> Void) {
+    /// 符号页（用户 11-06：要打的符号找不到）：左边分类、右边符号上下滑，点一个打一个、留在这页。
+    /// 底排和数字页一样，只是「，。」换成删除（这页没有第三排的删除键；逗号句号「常用」里都有）
+    private func buildSymbols() {
+        let tabs = SymbolTabs(titles: SymbolTable.all.map { $0.name }, selected: symbolTab)
+        let grid = CandidatePanel()
+        grid.accessibilityIdentifier = "symbolGrid"
+        grid.highlightFirst = false
+        grid.isHidden = false
+        grid.setItems(SymbolTable.all[symbolTab].items)
+        tabs.onPick = { [weak self] i in
+            self?.symbolTab = i
+            grid.setItems(SymbolTable.all[i].items)
+        }
+        grid.onPick = { [weak self] i in
+            guard let self else { return }
+            self.keyFeedback()
+            self.typeSymbol(SymbolTable.all[self.symbolTab].items[i])
+        }
+        let box = hRow([tabs, grid])
+        keyArea.addArrangedSubview(box)
+        tabs.widthAnchor.constraint(equalToConstant: PanelSide.width).isActive = true
+        let unit = UIView()      // 底排键宽的基准：这页没有字母键，用键盘宽的十分之一（一排 10 个键时一个键的宽）
+        unit.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(unit)
+        unit.widthAnchor.constraint(equalTo: keyArea.widthAnchor, multiplier: 0.1).isActive = true
+        addBottomRow(first: "123", unit: unit, deleteForPunct: true) { [weak self] in self?.switchLayer(.numbers) }
+    }
+
+    /// 最下面一排：[123/ABC] [🌐] [中/英] [空格（按住说话）] [，。] [换行]，直接加进 keyArea；deleteForPunct：「，。」换成删除
+    private func addBottomRow(first: String, unit: UIView, deleteForPunct: Bool = false, _ firstAction: @escaping () -> Void) {
         var fixed: [(UIView, CGFloat)] = []       // （按键，宽度是字母键的几倍）
         var views: [UIView] = []
         let k1 = key(first, isFunction: true, font: 16, firstAction)
@@ -2355,9 +2444,9 @@ final class KeyboardViewController: UIInputViewController {
         fixed.append((mode, 1.2))
         let space = makeSpaceKey()
         views.append(space)
-        let pk = makePunctKey()      // 空格右边的「，。」合并键（用户 10-26 要求放这里；以前在 123 旁边）
+        let pk = deleteForPunct ? deleteKey() : makePunctKey()      // 空格右边的「，。」合并键（用户 10-26 要求放这里；以前在 123 旁边）
         views.append(pk)
-        fixed.append((pk, 1.0))
+        fixed.append((pk, deleteForPunct ? 1.3 : 1.0))
         let ret = key(symbol: "return", isFunction: true) { [weak self] in self?.typeReturn() }
         ret.accessibilityIdentifier = "return"
         returnKey = ret

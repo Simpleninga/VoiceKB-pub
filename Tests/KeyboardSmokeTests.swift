@@ -911,6 +911,41 @@ final class KeyboardSmokeTests: XCTestCase {
     }
 
 
+    /// 用户 11-06：打不出加号。数字页直接有 + - =；「符号」页分类、上下滑、点一个打一个，中英文都这样
+    func testSymbolPage() throws {
+        let vc = makeKeyboard()
+        var typedSymbols: [String] = []
+        vc.symbolSink = { typedSymbols.append($0) }
+        for lang in ["中", "英"] {
+            if lang == "英" { modeKey(vc)?.sendActions(for: .touchDown) }
+            tap(vc, "123")
+            for t in ["+", "-", "="] { XCTAssertNotNil(keys(vc).first(where: { $0.currentTitle == t }), "\(lang)文数字页要有 \(t)") }
+            tap(vc, "符号")
+            vc.view.layoutIfNeeded()
+            XCTAssertNotNil(keys(vc).first(where: { $0.accessibilityIdentifier == "delete" }), "符号页要能删")
+            XCTAssertNotNil(keys(vc).first(where: { $0.accessibilityIdentifier == "space" }), "符号页要有空格")
+            let grid = try XCTUnwrap(all(vc.view).first(where: { $0.accessibilityIdentifier == "symbolGrid" }))
+            XCTAssertFalse(grid.isHidden)
+            XCTAssertGreaterThan(grid.bounds.height, 100, "符号区别被底排挤没")
+            let tab = try XCTUnwrap(all(vc.view).compactMap { $0 as? UIButton }.first(where: { $0.currentTitle == "数学" }))
+            tab.sendActions(for: .touchUpInside)
+            vc.view.layoutIfNeeded()
+            typedSymbols = []
+            try XCTUnwrap(keys(vc).first(where: { $0.currentTitle == "≠" && !$0.isHidden })).sendActions(for: .touchUpInside)
+            XCTAssertEqual(typedSymbols, ["≠"], "打的是当前分类里的符号")
+            tap(vc, "123")
+            tap(vc, "ABC")
+        }
+    }
+
+    func testSymbolTableIsComplete() {
+        let have = Set(SymbolTable.all.flatMap { $0.items })
+        for c in ##"!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"## { XCTAssertTrue(have.contains(String(c)), "少了 \(c)") }
+        for s in ["，", "。", "？", "！", "、", "：", "；", "“", "”", "‘", "’", "（", "）", "《", "》", "【", "】", "——", "……", "～", "·", "¥", "×", "÷", "±", "≠", "≈", "≥", "≤", "√", "∞", "π", "°", "℃", "€", "£", "①", "Ⅰ"] {
+            XCTAssertTrue(have.contains(s), "少了 \(s)")
+        }
+    }
+
     /// 空格右边的「，。」合并键（用户 10-26 要求；仿豆包）：逗号大字 + 右上角句号小字；点 = 逗号、上滑 = 句号；英文下是 , .
     func testPunctKeyRightOfSpace() {
         let vc = makeKeyboard()
