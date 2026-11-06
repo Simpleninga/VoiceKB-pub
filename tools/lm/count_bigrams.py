@@ -11,7 +11,7 @@ import jieba, pyengine
 
 dat, out = sys.argv[1], sys.argv[2]
 maxlines = int(sys.argv[3]) if len(sys.argv) > 3 else 10 ** 9
-VOCAB = 80000
+VOCAB = 100000
 PUNCT = {",": "，", "，": "，", ".": "。", "。": "。", "?": "？", "？": "？", "!": "！", "！": "！", "…": "…", "...": "…",
          "、": "、", ":": "：", "：": "：", ";": "；", "；": "；"}
 

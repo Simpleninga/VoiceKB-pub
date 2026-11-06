@@ -83,6 +83,7 @@ final class Dictation: ObservableObject {
     private var wantEngine = false
     private var deadline = Date.distantPast // 保活到什么时候
     private var recStart = Date()
+    private var lastActive = Date()           // 本 App 上次在前台的时间（见 watchKeyboardGone）
     private var resultText = ""
     private var resultSID = 0                // resultText 是第几次录音的（键盘靠它认出这条结果是不是它亲眼看着的那次录音）
     private var lastHeal = Date.distantPast
@@ -362,6 +363,7 @@ final class Dictation: ObservableObject {
             stopEngine()
             return
         }
+        watchKeyboardGone()
         if Date().timeIntervalSince(lastVerify) >= 5 {      // 键盘靠本机通道找我：它悄悄坏了要尽快发现、重建
             lastVerify = Date()
             Bridge.shared.verify { [weak self] ok in
@@ -369,6 +371,20 @@ final class Dictation: ObservableObject {
             }
         }
         heal()
+    }
+
+    /// 录音时屏幕上的键盘每 0.1 秒来取一次状态。收起键盘时它自己会发停止，但锁屏、扩展被系统结束时发不出来：
+    /// 连续几秒没人来取就当键盘走了，结束录音。本 App 在前台时不算（App 里试一句；键盘跳过来开录时键盘本来就不在），回到后台后等键盘出来的时间放宽些
+    private func watchKeyboardGone() {
+        if UIApplication.shared.applicationState == .active { lastActive = Date(); return }
+        guard state == "recording" else { return }
+        let since = max(recStart, lastActive)
+        let seen = Bridge.shared.lastHit.flatMap { $0 > since ? $0 : nil }
+        let quiet = Date().timeIntervalSince(seen ?? since)
+        if quiet > (seen == nil ? 15 : 4) {
+            log("键盘 \(Int(quiet)) 秒没来取状态，当它不在屏幕上了，结束录音")
+            stopRecording()
+        }
     }
 
     /// 待命中却出了岔子就自己修：引擎被系统停了（键盘会当成「没待命」、点麦克风只能走跳转），或者引擎在转但好几秒没有声音进来

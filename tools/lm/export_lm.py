@@ -29,6 +29,8 @@ TRI = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--tri=")), Non
 MINT = int(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--mint=")), 3))
 DELTA = float(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--delta=")), 0.2))
 TSCALE = float(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--tscale=")), 1.0))      # 三元计数只数了部分语料时，乘上这个倍数和二元对齐（试验用）
+PRUNE = float(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--prune=")), 0))      # 熵剪枝阈值（纳特），0 = 不剪
+KEEP_TOP = 8
 K3_MIN, K3_PER = 10.0, 3.0
 K_MIN = 20.0
 K_PER_FOLLOWER = float(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--k=")), 5.0))      # 5.0 = 线上；试验时可调
@@ -90,9 +92,15 @@ for a in range(V):
     Ks.append(K)
     cas.append(ca)
     back.append(min(65535, round(math.log((ca + K) / K) * U)))
-    for b, c in sorted(by_a.get(a, [])):
+    fol = by_a.get(a, [])
+    top = sorted(c for _, c in fol)[-KEEP_TOP:] if fol else []
+    least = top[0] if top else 0
+    for b, c in sorted(fol):
         pu = math.exp(q.get(words[b], PUNCT_Q) - 21.0 * 1.0)     # q 是 ln(权重+1)，LN_TOTAL = 21
         p = (c + K * pu) / (ca + K)
+        # 熵剪枝：这对词的代价和「没见过时回退算出来的」差不多，存了也没用（后继词最多的几个留着给联想）
+        if PRUNE and c < least and abs(math.log(p / pu) - math.log(K / (ca + K)) ) < PRUNE:
+            continue
         pidx[(a, b)] = len(bs)
         bs.append(b)
         costs.append(max(0, min(65535, round(-math.log(p) * U))))

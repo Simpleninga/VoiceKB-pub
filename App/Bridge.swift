@@ -51,7 +51,8 @@ final class Bridge: @unchecked Sendable {
     var onKbd: (() -> Void)?
 
     private var ready: Bool { get { lock.withLock { _ready } } set { lock.withLock { _ready = newValue } } }
-    private var lastHit: Date? { get { lock.withLock { _lastHit } } set { lock.withLock { _lastHit = newValue } } }
+    /// 键盘最后一次来连我的时间
+    private(set) var lastHit: Date? { get { lock.withLock { _lastHit } } set { lock.withLock { _lastHit = newValue } } }
 
     /// 给主界面「状态」一栏看的
     var statusText: String {

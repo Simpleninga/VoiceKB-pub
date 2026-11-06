@@ -185,6 +185,8 @@ final class PinyinEngine {
     static let typoMin = 2, typoMax = 14
     // 另一路整句比最好的贵不超过这么多，才当第二个候选给出来：最好的改过 → 原样那句宽一点（退路）；最好的没改 → 纠正句要很接近才给
     static let altRawMargin = Int(8.0 * 2048), altFixMargin = Int(3.0 * 2048)
+    static let assocPen = 1024, assocMix = 6, assocHead = 3   // 一个音节时：联想词比同音字多罚多少（1/2048 纳特）、穿插几个；联想先给几个
+    static let noPredict = ["妈的", "他妈", "你妈", "尼玛", "傻逼", "我操", "卧槽"]      // 口语语料里常见，但不主动推荐（打全拼音照样能出来）
 
     private let dict: PinyinDict
     let lm: LMDict?
@@ -223,7 +225,8 @@ final class PinyinEngine {
     func predict(after ctx: String, limit: Int = 12) -> [String] {
         guard let lm, !ctx.isEmpty else { return [] }
         let a = lm.id(of: ctx)
-        return a >= 0 ? lm.followers(a, limit: limit) : []
+        guard a >= 0 else { return [] }
+        return Array(lm.followers(a, limit: limit + Self.noPredict.count).filter { !Self.noPredict.contains($0) }.prefix(limit))
     }
 
     /// 词典里有没有这个键 + 词（个人学习：有的就不用再记成自造词）
@@ -998,21 +1001,15 @@ final class PinyinEngine {
         }
         if typo { for (i, _) in fz.prefix(4) { push(dict.word(i), n, .fuzzy, fixKey(i)) } }
         for w in mine { push(w, n, .user) }
-        let pick = full.prefix(8).enumerated().filter { $0.offset < 3 || dict.logWeight($0.element) >= top - 4.5 }.map { $0.element }
-        for i in (weak ? Array(pick.prefix(2)) : pick) { push(dict.word(i), n, .full) }
-        if weak {
-            for (i, _) in fz.prefix(3) { push(dict.word(i), n, .fuzzy, fixKey(i)) }
-            for i in pick.dropFirst(2) { push(dict.word(i), n, .full) }
+        var pick = full.prefix(8).enumerated().filter { $0.offset < 3 || dict.logWeight($0.element) >= top - 4.5 }.map { $0.element }
+        // 联想：键以输入开头的更长的词，按「接在上文后面」的代价排（用过的词往前挪）。
+        // 打全了一个音节（xi）就只要第一个音节正是它的词（喜欢、希望），xian / xiao 开头的是还没打完，不凑数
+        func acost(_ e: Int) -> Int {
+            let uni = Self.uniBase - dict.rawWeight(e)
+            let base = lm != nil && ctxID >= 0 ? stepCost(ctxID, lmID(e), uni) : uni
+            if let u { return base - u.bonus(ctxw, dict.word(e)) }
+            return base
         }
-        // 2. 整句；另一路（改过拼音 ↔ 没改过）的最好整句紧跟在后面：纠错改错了点它就回到原样，没敢改的点它就是纠正后的
-        if let t = whole {
-            push(t.text, n, .sentence, t.fix, t.parts)
-            if let top = beams[n].first, let alt = beams[n].first(where: { $0.fix != top.fix }), alt.cost - top.cost <= (top.fix ? Self.altRawMargin : Self.altFixMargin),
-               let a = sentence(n, alt) {
-                push(a.text, n, .sentence, a.fix, a.parts)
-            }
-        }
-        // 3. 联想：键以输入开头的更长的词，取权重最高的 6 个（展开时 40 个）
         func assocTop(_ cap: Int) -> [Int] {
             var top: [(Double, Int)] = []       // 按（权重大 → 小，序号小 → 大）保持有序，最多 cap 个
             let r = b.withUnsafeBufferPointer { dict.prefix($0.baseAddress!, n) }
@@ -1026,8 +1023,37 @@ final class PinyinEngine {
             }
             return top.map { $0.1 }
         }
-        let assoc = s.cuts.isEmpty ? assocTop(expanded ? 40 : 6) : []
-        for i in assoc.prefix(3) { push(dict.word(i), n, .assoc) }     // 联想先给 3 个，后面接上「首字 / 前几个字」，其余的联想排在它们后面
+        let syl = s.cuts.isEmpty && pinyinSyllables.contains(String(decoding: b, as: UTF8.self)) && (n >= 2 || b[0] == 97 || b[0] == 111 || b[0] == 101)      // 单个字母里只有 a o e 自己是音节
+        var assoc: [Int] = !s.cuts.isEmpty ? [] : (syl ? prefixWords(b, n, 1, 40) : assocTop(40))
+        if (lm != nil && ctxID >= 0) || u != nil {
+            assoc = assoc.enumerated().map { (acost($0.element), $0.offset, $0.element) }
+                .sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }.map { $0.2 }
+        }
+        if n == 1, let one = assoc.firstIndex(where: { dict.word($0).count == 1 }) {      // 单个字母：第一个给字（按空格落一个字），后面才是词
+            let e = assoc.remove(at: one)
+            assoc.insert(e, at: 0)
+        }
+        if syl, !pick.isEmpty, !weak {      // 一个音节：第一个是最常用的字，别的字和常用词按代价穿插（wo → 我 我们 我的 … 喔 窝）
+            var rest: [(Int, Int, Int, Int)] = pick.dropFirst().enumerated().map { (acost($0.element) + (fpen[$0.element] ?? 0), 0, $0.offset, $0.element) }
+            rest += assoc.prefix(Self.assocMix).enumerated().map { (acost($0.element) + Self.assocPen, 1, $0.offset, $0.element) }
+            rest.sort { ($0.0, $0.1, $0.2) < ($1.0, $1.1, $1.2) }
+            pick = [pick[0]] + rest.map { $0.3 }
+        }
+        for i in (weak ? Array(pick.prefix(2)) : pick) { push(dict.word(i), n, dict.keyLength(i) == n ? .full : .assoc) }
+        if weak {
+            for (i, _) in fz.prefix(3) { push(dict.word(i), n, .fuzzy, fixKey(i)) }
+            for i in pick.dropFirst(2) { push(dict.word(i), n, .full) }
+        }
+        // 2. 整句；另一路（改过拼音 ↔ 没改过）的最好整句紧跟在后面：纠错改错了点它就回到原样，没敢改的点它就是纠正后的
+        if let t = whole {
+            push(t.text, n, .sentence, t.fix, t.parts)
+            if let top = beams[n].first, let alt = beams[n].first(where: { $0.fix != top.fix }), alt.cost - top.cost <= (top.fix ? Self.altRawMargin : Self.altFixMargin),
+               let a = sentence(n, alt) {
+                push(a.text, n, .sentence, a.fix, a.parts)
+            }
+        }
+        // 3. 联想先给几个，后面接上「首字 / 前几个字」，其余的联想排在它们后面
+        for i in assoc.prefix(Self.assocHead) { push(dict.word(i), n, .assoc) }
         // 4. 前缀：只在音节边界 / 分词符处切，最多三处，从长到短
         var bs = boundaries(b, s.cuts).filter { $0 < n }
         for c in s.cuts where c < n && !bs.contains(c) { bs.append(c) }
@@ -1036,7 +1062,7 @@ final class PinyinEngine {
             if let t = sentence(j) { push(t.text, j, .prefixSentence, t.fix, t.parts) }
             for i in okEntries(b, 0, j, s.cuts).prefix(3) { push(dict.word(i), j, .prefix) }
         }
-        for i in assoc.dropFirst(3).prefix(3) { push(dict.word(i), n, .assoc) }
+        for i in assoc.dropFirst(Self.assocHead).prefix(3) { push(dict.word(i), n, .assoc) }
         // 5. 简拼
         if n >= 2, n <= 6, s.cuts.isEmpty {
             for idx in b.withUnsafeBufferPointer({ dict.initials($0.baseAddress!, n, limit: 10) }) { push(dict.word(idx), n, .initials) }

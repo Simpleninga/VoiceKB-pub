@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""把雾凇拼音（rime-ice，GPL-3.0）的词库压成键盘用的二进制词典 Keyboard/Resources/pinyin.dat。
+"""把词库压成键盘用的二进制词典 Keyboard/Resources/pinyin.dat。源文件的格式和雾凇拼音（rime-ice）一样，2026-11 起用的是
+白霜词频 + 语料筛过的新词 + 口语词频混合后的版本，来源和做法见 tools/DATA_SOURCES.md。
 
 用法：python3 tools/build_dict.py <放着 8105.dict.yaml 和 base.dict.yaml 的目录> <输出 pinyin.dat>
-源文件：https://github.com/iDvel/rime-ice/tree/main/cn_dicts
 
 格式（小端）：
   头 40 字节：魔数 "PYD1"、条数 n、键区偏移、词区偏移、表偏移、简拼条数 m、简拼表偏移、简拼键区偏移
@@ -49,20 +49,20 @@ def add(word, syl, w):
 for word, syl, w in load(src + "/8105.dict.yaml"):
     add(word, syl, w)          # 单字全收，保证任何字都打得出来
 for word, syl, w in load(src + "/base.dict.yaml"):
-    if len(word) <= 3 and w >= 100 or len(word) > 3 and w >= 1500:
+    if len(word) <= 3 and w >= 3 or len(word) > 3 and w >= 15:
         add(word, syl, w)
 
-# 补词表：雾凇里没有、或权重压得太低的口语 / 网络用语 / 专有名词（天胡、恰饭、医患通…），格式见 tools/extra_words.txt
+# 补词表：词库里没有、或权重压得太低的口语 / 网络用语 / 专有名词（天胡、恰饭、医患通…），格式见 tools/extra_words.txt；权重是雾凇尺度，除以 10 折成白霜尺度
 for line in open(__file__.rsplit("/", 1)[0] + "/extra_words.txt", encoding="utf8"):
     p = line.rstrip("\n").split("\t")
     if len(p) == 3 and not line.startswith("#") and p[2].isdigit():
-        add(p[0], p[1].split(), int(p[2]))
+        add(p[0], p[1].split(), int(p[2]) // 10)
 
 # 领域词补全（THUOCL：成语 / 医学 / 财经 / 法律 / 地名…，tools/build_domain_words.py 生成）：同样格式，权重已经压得比日常词低
 for line in open(__file__.rsplit("/", 1)[0] + "/extra_domain.txt", encoding="utf-8"):
     p = line.rstrip("\n").split("\t")
     if len(p) == 3 and not line.startswith("#") and p[2].isdigit():
-        add(p[0], p[1].split(), int(p[2]))
+        add(p[0], p[1].split(), int(p[2]) // 10)
 
 # 口语词校正：雾凇的词频来自网页语料，个别口语词被同音的书面词压得太狠（待会 12450 对 带回 96010）。
 # tools/boost.txt 里每行一个词，把它提到同拼音的所有词前面（只抬到刚好比最高的那个多 1，别的不动）

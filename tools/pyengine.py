@@ -644,12 +644,17 @@ def prune(states):
     return sorted(out, key=lambda x: (x[0], x[2]))
 
 
+NO_PREDICT = ("妈的", "他妈", "你妈", "尼玛", "傻逼", "我操", "卧槽")      # 口语语料里常见，但不主动推荐（打全拼音照样能出来）
+
+
 def predict(lm, ctx, limit=12):
     """上文最后一个词 ctx 之后最可能接的词 / 标点（没有 LM 或词不认识返回空）"""
     if lm is None or not ctx:
         return []
     a = lm.id(ctx)
-    return lm.followers(a, limit) if a >= 0 else []
+    if a < 0:
+        return []
+    return [w for w in lm.followers(a, limit + len(NO_PREDICT)) if w not in NO_PREDICT][:limit]
 
 
 # ---- 拼音纠错（打错键 / 漏打 / 多打 / 前后鼠对调 / 模糊音）----
@@ -922,6 +927,11 @@ def t9_syllables(D, raw, limit=12):
     return [s for _, s in opts[:limit]], rawpos[p]
 
 
+ASSOC_PEN = 1024      # 一个音节时联想词比同音字多罚多少（1/2048 纳特）：打全了的字优先一点
+ASSOC_MIX = 6         # 一个音节时穿插几个联想词
+ASSOC_HEAD = 3        # 联想先给几个
+
+
 def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
     letters, cuts, rawpos = split_raw(raw)
     b = letters.encode()
@@ -1003,8 +1013,29 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
     for w in mine:
         push(w, n, "自")
     pick = [i for k, i in enumerate(full[:8]) if k < 3 or D.entry(i)[1] >= top - 4.5]
+    # 联想：键以输入开头的更长的词，按「接在上文后面」的代价排（用过的词往前挪）。
+    # 打全了一个音节（xi）就只要第一个音节正是它的词（喜欢、希望），xian / xiao 开头的是还没打完，不凑数
+    def acost(e):
+        w, q = D.entry_raw(e)
+        base = step_cost(lm, ctx_id, lm.id(w), UNI_BASE - q) if lm and ctx_id >= 0 else UNI_BASE - q
+        return base - user.bonus(ctx, w) if user else base
+    syl = not cuts and letters in SYL and (n >= 2 or letters in "aoe")
+    if cuts:
+        cand = []
+    elif syl:
+        cand = prefix_words(D, b, n, 1, 40)
+    else:
+        cand = [i for _, i in sorted(((-D.entry(i)[1], i) for i in D.prefix(b) if len(D.keys[i]) > n))[:40]]
+    if (lm and ctx_id >= 0) or user:
+        cand = [e for _, _, e in sorted((acost(e), k, e) for k, e in enumerate(cand))]
+    if n == 1:       # 单个字母：第一个给字（按空格落一个字），后面才是词
+        one = next((k for k, e in enumerate(cand) if len(D.entry(e)[0]) == 1), 0)
+        cand = cand[one:one + 1] + cand[:one] + cand[one + 1:] if cand else cand
+    if syl and pick and not weak:      # 一个音节：第一个是最常用的字，别的字和常用词按代价穿插（wo → 我 我们 我的 … 喔 窝）
+        rest = sorted([(acost(e) + fpen.get(e, 0), 0, k, e) for k, e in enumerate(pick[1:])] + [(acost(e) + ASSOC_PEN, 1, k, e) for k, e in enumerate(cand[:ASSOC_MIX])])
+        pick = pick[:1] + [x[3] for x in rest]
     for i in pick[:2] if weak else pick:
-        push(D.entry(i)[0], n, "全")
+        push(D.entry(i)[0], n, "全" if len(D.keys[i]) == n else "联")
     if weak:
         for w, i, c in fz[:3]:
             push(w, n, "纠", D.keys[i].decode())
@@ -1018,10 +1049,7 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
             t, f, ps = sentence(n, alt)
             if t:
                 push(t, n, "句", f, ps)
-    r = D.prefix(b)
-    cand = [(D.entry(i)[1], i) for i in r if len(D.keys[i]) > n and not cuts]
-    cand.sort(key=lambda x: (-x[0], x[1]))
-    for q, i in cand[:3]:       # 联想先给 3 个，后面接上「首字 / 前几个字」，其余的联想排在它们后面
+    for i in cand[:ASSOC_HEAD]:       # 联想先给几个，后面接上「首字 / 前几个字」，其余的联想排在它们后面
         push(D.entry(i)[0], n, "联")
     bs = [e for e in boundaries(b, cuts) if e < n]
     for c in sorted(cuts):
@@ -1036,7 +1064,7 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
         ex = [e for e in list(D.exact(b[:j]))[:60] if entry_ok(D, e, b, 0, j, cuts)]
         for i in ex[:3]:
             push(D.entry(i)[0], j, "前")
-    for q, i in cand[3:6]:
+    for i in cand[ASSOC_HEAD:ASSOC_HEAD + 3]:
         push(D.entry(i)[0], n, "联")
     if 2 <= n <= 6 and not cuts:
         for idx in D.initials(b)[:10]:
@@ -1046,7 +1074,7 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
     if expanded:     # 点候选栏的向下箭头展开：前面的顺序不变，后面补上其余的
         for i in full:
             push(D.entry(i)[0], n, "全")
-        for q, i in cand[:40]:
+        for i in cand:
             push(D.entry(i)[0], n, "联")
         # 最长的三处、再加首字：每处先给最常用的 12 个同音词，接着是以它开头的联想词（豆包的做法：首字单独列出，下面一串联想），
         # 同音的冷僻字（一处可多达 60 个）放到最后

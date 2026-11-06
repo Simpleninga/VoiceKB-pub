@@ -1341,6 +1341,75 @@ final class SettingsPanel: UIView {
 }
 
 /// 点候选栏的向下箭头展开：所有候选铺满键盘区（盖住按键），可上下滑，点一个就选它
+/// 展开面板左边一列（对标豆包 more_cand）：上面 全部 / 单字 / 词语，下面按音节筛（拼音长时，想要其中一段的字直接点它）
+final class PanelSide: UIView {
+    static let width: CGFloat = 62
+    var onChange: ((_ kind: Int, _ consume: Int?) -> Void)?
+    private let stack = UIStackView()
+    private var kind = 0
+    private var consume: Int?
+    private var chips: [(title: String, consume: Int)] = []
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.17, alpha: 1) : UIColor(white: 0.88, alpha: 1) }
+        accessibilityIdentifier = "panelSide"
+        isHidden = true
+        stack.axis = .vertical
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) 不用") }
+
+    func set(chips new: [(title: String, consume: Int)]) {
+        chips = new
+        kind = 0
+        consume = nil
+        rebuild()
+    }
+
+    private func rebuild() {
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for (i, t) in ["全部", "单字", "词语"].enumerated() { stack.addArrangedSubview(chip(t, id: "filter\(i)", on: kind == i && consume == nil, font: 15, tag: i)) }
+        for (i, c) in chips.prefix(4).enumerated() { stack.addArrangedSubview(chip(c.title, id: "syl\(i)", on: consume == c.consume, font: 12, tag: 100 + i)) }
+    }
+
+    private func chip(_ title: String, id: String, on: Bool, font: CGFloat, tag: Int) -> UIButton {
+        let b = UIButton(type: .custom)
+        b.accessibilityIdentifier = id
+        b.tag = tag
+        b.setTitle(title, for: .normal)
+        b.titleLabel?.font = .systemFont(ofSize: font, weight: on ? .semibold : .regular)
+        b.titleLabel?.adjustsFontSizeToFitWidth = true
+        b.titleLabel?.minimumScaleFactor = 0.6
+        b.setTitleColor(on ? Brand.green : .label, for: .normal)
+        b.backgroundColor = on ? UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.30, alpha: 1) : .white } : .clear
+        b.layer.cornerRadius = 7
+        b.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        b.addTarget(self, action: #selector(tapped(_:)), for: .touchUpInside)
+        return b
+    }
+
+    @objc private func tapped(_ b: UIButton) {
+        if b.tag < 100 {
+            kind = b.tag
+            consume = nil
+        } else {
+            kind = 0
+            consume = chips[b.tag - 100].consume
+        }
+        rebuild()
+        onChange?(kind, consume)
+    }
+}
+
 final class CandidatePanel: TouchFirstScroll {
     var onPick: ((Int) -> Void)?
     private var pool: [KeyButton] = []
@@ -1391,7 +1460,7 @@ final class CandidatePanel: TouchFirstScroll {
             pool[i].frame = CGRect(x: x, y: y, width: w, height: rowH)
             x += w
         }
-        contentSize = CGSize(width: bounds.width, height: y + rowH)
+        contentSize = CGSize(width: bounds.width, height: y + rowH + 44)      // 底下多留一点，最后一行别被右下角的删除键盖住
     }
 
     @objc private func tapped(_ b: UIButton) { onPick?(b.tag) }
@@ -1506,7 +1575,8 @@ final class KeyboardViewController: UIInputViewController {
     private var deleteTimer: Timer?
     private var clearing = false           // 这次在删除键上左滑清空了（松手不再当点按）
     private var pressDeleted: String?      // 这次按下去就删掉的那个字（左滑清空时算进「撤销」）
-    private var clearedText = ""           // 删除键左滑清空时清掉的字，顶栏「撤销」放回去用
+    private var clearedText = ""           // 删除键清空时清掉的字，顶栏「撤销」、删除键下滑放回去用
+    private var clearedBeforePress = ""    // 这次按下删除键之前还能撤回的字（按下那一下算打字，会把 clearedText 清掉）
     private(set) var live = ""     // 这次听写里「当前这一段」已经打进输入框的文字：说话时跟着识别结果变，润色好了被替换
     private var liveSID = -1       // live 是第几次录音的
     private var liveFinal = false  // 已经收到过结果（再替换前要先确认光标还在这段文字后面）
@@ -1515,6 +1585,7 @@ final class KeyboardViewController: UIInputViewController {
     private var myCuts = 0         // 我这边冻结过几回；App 回报的次数对得上，它发来的文字才是新的
     private var dead = -1          // 用户撤销 / 说完后等润色时又动手改过的那次录音，后面的结果不再往里替换
     private var recordingNow = false
+    private var jumpedAt = Date.distantPast      // 上次跳主 App 开录的时间
     private var lastCancel = Date.distantPast      // 上次让主 App 作废「别的输入框的录音」是什么时候（没回音就隔一秒再说一遍）
     private var needForeignCheck = false           // 刚弹出 / 刚换了输入框：拿到下一份快照时查一次「这次录音是不是别的输入框的」。平时（轮询、后台实例被通知叫醒）不查
     /// 测试用：宿主进程号（真机上读 _hostProcessIdentifier）
@@ -1531,6 +1602,8 @@ final class KeyboardViewController: UIInputViewController {
     private weak var returnKey: KeyButton?
     private var shownReturn: String??
     private let panel = CandidatePanel()
+    private let panelSide = PanelSide()
+    private let panelDelete = KeyButton(type: .custom)
     private var panelOpen = false
     private weak var spaceKey: KeyButton?
     private var spaceWave: WaveView?
@@ -1577,9 +1650,12 @@ final class KeyboardViewController: UIInputViewController {
     private var chinese = UserDefaults.standard.object(forKey: "zh") as? Bool ?? true
     private var shift = Shift.off
     private var lastShiftTap = Date.distantPast
+    private var lastSpace = Date.distantPast
     private(set) var buffer = ""                 // 拼音输入串（含分词符 '）
+    private var picked: [(cand: PinyinCandidate, letters: String)] = []      // 分段选好、还留在拼音行的字（letters = 它吃掉的那段输入串），picked 非空时 buffer 一定非空
     private var cands: [PinyinCandidate] = []
-    private var panelList: [PinyinCandidate] = []
+    private var panelAll: [PinyinCandidate] = []        // 展开面板的全部候选
+    private var panelList: [PinyinCandidate] = []       // 筛选后显示的
     private lazy var words: EnglishWords? = {
         guard let path = Bundle(for: KeyboardViewController.self).path(forResource: "enwords", ofType: "txt") else { return nil }
         let w = EnglishWords(path: path)
@@ -1621,10 +1697,10 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     /// 选了一段：记下来；输入串选空了 = 这次拼字完了，按规矩学（每段的切词记词频、词对；分 ≥2 段选出来的 2~6 个字记成自造词）
-    private func noteCommit(_ c: PinyinCandidate, letters: String) {
+    private func noteCommit(_ c: PinyinCandidate, letters: String, last: Bool) {
         guard engine?.user != nil else { return }
         session.append((c.text, !c.fix.isEmpty ? c.fix : (!c.key.isEmpty ? c.key : letters), c.parts.isEmpty ? [c.text] : c.parts))
-        guard buffer.isEmpty else { return }
+        guard last, buffer.isEmpty else { return }
         defer { session = [] }
         guard let e = engine, let u = e.user else { return }
         let chunks = session, prev = sessionPrev
@@ -1762,6 +1838,7 @@ final class KeyboardViewController: UIInputViewController {
         candBar.onPick = { [weak self] i in self?.pick(i) }
         candBar.onExpand = { [weak self] in self?.togglePanel() }
         panel.onPick = { [weak self] i in self?.pickFromPanel(i) }
+        panelSide.onChange = { [weak self] kind, consume in self?.filterPanel(kind, consume) }
         candBar.onUndo = { [weak self] in self?.undoVoice() }
         candBar.onMic = { [weak self] in self?.micTapped() }
         candBar.onGear = { [weak self] in self?.toggleSettings() }
@@ -1819,6 +1896,11 @@ final class KeyboardViewController: UIInputViewController {
         view.window?.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
     }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        flushPicked()          // 没选完就走了：选好的字留在原来的输入框里，不带到下一个
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         flushWatch()
@@ -1832,6 +1914,13 @@ final class KeyboardViewController: UIInputViewController {
             }
             (view as? ClickInputView)?.resetLandings()
             r.resetStats()
+        }
+        // 收起键盘、切到别的 App：这次录音到此结束，回来时麦克风是关着的（用户 11-06）。已经打进去的字留着，结果回来再收。
+        // 跳主 App 开录那一下例外：键盘被切走正是为了开始录音（这时 opening 可能已被 render 清掉，所以按时间算）。
+        // 锁屏这类这里走不到的，主 App 自己会发现（watchKeyboardGone）
+        if recordingNow, Date().timeIntervalSince(jumpedAt) > 6 {
+            pttActive = false
+            send("stop", ["src": "hide"])
         }
         visible = false
         hideEpoch &+= 1
@@ -1923,12 +2012,32 @@ final class KeyboardViewController: UIInputViewController {
             root.topAnchor.constraint(equalTo: view.topAnchor, constant: 2),
         ])
         panel.translatesAutoresizingMaskIntoConstraints = false
+        panelSide.translatesAutoresizingMaskIntoConstraints = false
+        panelDelete.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(panelSide)
         view.addSubview(panel)
+        view.addSubview(panelDelete)
+        panelDelete.accessibilityIdentifier = "panelDelete"
+        panelDelete.setImage(UIImage(systemName: "delete.left"), for: .normal)
+        panelDelete.tintColor = .label
+        panelDelete.normalColor = funcColor
+        panelDelete.pressedColor = funcPressed
+        panelDelete.layer.cornerRadius = 8
+        panelDelete.isHidden = true
+        panelDelete.addTarget(self, action: #selector(panelDeleteTapped), for: .touchUpInside)
         NSLayoutConstraint.activate([
+            panelSide.topAnchor.constraint(equalTo: keyArea.topAnchor),
+            panelSide.bottomAnchor.constraint(equalTo: keyArea.bottomAnchor),
+            panelSide.leadingAnchor.constraint(equalTo: keyArea.leadingAnchor),
+            panelSide.widthAnchor.constraint(equalToConstant: PanelSide.width),
             panel.topAnchor.constraint(equalTo: keyArea.topAnchor),
             panel.bottomAnchor.constraint(equalTo: keyArea.bottomAnchor),
-            panel.leadingAnchor.constraint(equalTo: keyArea.leadingAnchor),
+            panel.leadingAnchor.constraint(equalTo: panelSide.trailingAnchor),
             panel.trailingAnchor.constraint(equalTo: keyArea.trailingAnchor),
+            panelDelete.trailingAnchor.constraint(equalTo: keyArea.trailingAnchor, constant: -4),
+            panelDelete.bottomAnchor.constraint(equalTo: keyArea.bottomAnchor, constant: -4),
+            panelDelete.widthAnchor.constraint(equalToConstant: 58),
+            panelDelete.heightAnchor.constraint(equalToConstant: 42),
         ])
         settingsPanel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(settingsPanel)
@@ -2577,7 +2686,7 @@ final class KeyboardViewController: UIInputViewController {
         if composing {
             // 拼音行只显示用户打的字母（纠错只在后台改候选，不改、不标记用户打的字）
             let comp = chinese ? (nineSyll != nil ? nineComp() : (engine?.display(buffer) ?? buffer)) : buffer
-            candBar.showCandidates(comp: comp, items: cands.map { $0.text })
+            candBar.showCandidates(comp: picked.map { $0.cand.text }.joined() + comp, items: cands.map { $0.text })
         } else if recordingNow {
             candBar.showWave()
         } else if statusText.isEmpty || statusHint, !predictions.isEmpty {
@@ -2595,17 +2704,43 @@ final class KeyboardViewController: UIInputViewController {
     private func togglePanel() {
         if panelOpen { closePanel(); return }
         guard composing else { return }
-        panelList = candidateList(limit: chinese ? 200 : 100, expanded: true)
-        panel.setItems(panelList.map { $0.text })
         panel.isHidden = false
+        panelSide.isHidden = false
+        panelDelete.isHidden = false
         panelOpen = true
         candBar.setExpanded(true)
+        reloadPanel()
+    }
+
+    private func reloadPanel() {
+        panelAll = candidateList(limit: chinese ? 200 : 100, expanded: true)
+        // 筛音节：候选吃掉的长度不止一种时（拼音有好几个音节）才有得选，从短到长
+        let lens = Array(Set(panelAll.map { $0.consume })).sorted()
+        panelSide.set(chips: lens.count > 1 ? lens.map { (title: engine?.display(String(buffer.prefix($0))) ?? "", consume: $0) } : [])
+        filterPanel(0, nil)
+    }
+
+    /// kind：0 全部，1 单字，2 词语；consume：只看吃掉这么长拼音的
+    private func filterPanel(_ kind: Int, _ consume: Int?) {
+        panelList = panelAll.filter {
+            if let consume, $0.consume != consume { return false }
+            return kind == 0 || (kind == 1) == ($0.text.count == 1)
+        }
+        panel.setItems(panelList.map { $0.text })
     }
 
     private func closePanel() {
         panel.isHidden = true
+        panelSide.isHidden = true
+        panelDelete.isHidden = true
         panelOpen = false
         candBar.setExpanded(false)
+    }
+
+    @objc private func panelDeleteTapped() {
+        keyFeedback()
+        deleteOnce()
+        if panelOpen { reloadPanel() }
     }
 
     private func pickFromPanel(_ i: Int) {
@@ -2681,7 +2816,16 @@ final class KeyboardViewController: UIInputViewController {
             refreshBar()
         } else if composing, let first = cands.first {
             commit(first)
+        } else if Date().timeIntervalSince(lastSpace) < 0.4, let c = contextBefore(), c.hasSuffix(" "), let p = c.dropLast().last, p.isLetter || p.isNumber {
+            lastSpace = .distantPast                // 连点两下空格：刚才那个空格换成句号（用户没在拼字时）
+            textDocumentProxy.deleteBackward()
+            let t = chinese ? "。" : ". "
+            textDocumentProxy.insertText(t)
+            ctxTail = String(ctxTail.dropLast()) + t
+            predictions = []
+            refreshBar()
         } else {
+            lastSpace = Date()
             textDocumentProxy.insertText(" ")
             addCtx(" ")
             predictions = []
@@ -2749,6 +2893,7 @@ final class KeyboardViewController: UIInputViewController {
         if composing {
             buffer.removeLast()
             if buffer.hasSuffix("'") { buffer.removeLast() }
+            if buffer.isEmpty { unpick() }
             updateCandidates()
         } else {
             textDocumentProxy.deleteBackward()
@@ -2945,14 +3090,32 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    /// 把候选打进输入框，吃掉对应的拼音，剩下的接着出候选
+    /// 选了一个候选：吃掉对应的拼音。拼音还没选完时字先留在拼音行（不进输入框），退格能一段段撤回；全选完才一起落下
     private func commit(_ c: PinyinCandidate) {
-        let letters = String(buffer.prefix(c.consume)).replacingOccurrences(of: "'", with: "")
-        textDocumentProxy.insertText(c.text)
+        picked.append((cand: c, letters: String(buffer.prefix(c.consume))))
         addCtx(c.text)
         buffer = c.consume >= buffer.count ? "" : String(buffer.dropFirst(c.consume))
-        if c.text.unicodeScalars.contains(where: { (0x4E00...0x9FFF).contains($0.value) }) { noteCommit(c, letters: letters) }      // 混输的英文词、表情不进中文个人学习
+        if buffer.isEmpty { flushPicked() }
         updateCandidates()
+    }
+
+    /// 把拼音行里选好的字落进输入框，按规矩学
+    private func flushPicked() {
+        guard !picked.isEmpty else { return }
+        let ps = picked
+        picked = []
+        textDocumentProxy.insertText(ps.map { $0.cand.text }.joined())
+        let zh = ps.filter { $0.cand.text.unicodeScalars.contains(where: { (0x4E00...0x9FFF).contains($0.value) }) }      // 混输的英文词、表情不进中文个人学习
+        for (i, p) in zh.enumerated() {
+            noteCommit(p.cand, letters: p.letters.replacingOccurrences(of: "'", with: ""), last: i == zh.count - 1)
+        }
+    }
+
+    /// 撤回最后选的一段：字变回拼音，接着改
+    private func unpick() {
+        guard let p = picked.popLast() else { return }
+        buffer = p.letters
+        ctxTail = String(ctxTail.dropLast(p.cand.text.count))
     }
 
     /// 拼音串还没选字就要走（换行、切语言、切层、点麦克风、打标点）。
@@ -2965,6 +3128,7 @@ final class KeyboardViewController: UIInputViewController {
             if chinese, let c = cands.first, c.consume > 0 { commit(c) }  // 先上能匹配的候选
             guard !buffer.isEmpty else { return }
         }
+        flushPicked()
         var t = buffer.replacingOccurrences(of: "'", with: "")
         if t.contains(where: { $0.isNumber }) { freshCands() }
         if t.contains(where: { $0.isNumber }), let k = cands.first?.key, k.count >= t.count { t = String(k.prefix(t.count)) }     // 九键：数字串落成第一个候选的拼音
@@ -3319,6 +3483,7 @@ final class KeyboardViewController: UIInputViewController {
         guard let url = c.url else { return }
         expectOwnRecording()
         opening = true
+        jumpedAt = Date()
         openToken &+= 1
         flash("正在打开「芽音」App…", Brand.green, for: 8)
         tryOpen(url, step: 0, trail: [], token: openToken)
@@ -3608,6 +3773,7 @@ final class KeyboardViewController: UIInputViewController {
         keyFeedback()
         clearing = false
         pressDeleted = composing ? nil : contextBefore()?.last.map { String($0) }
+        clearedBeforePress = clearedText
         deleteOnce()
         deleteTimer?.invalidate()
         deleteTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
@@ -3622,13 +3788,26 @@ final class KeyboardViewController: UIInputViewController {
         deleteTimer = nil
     }
 
-    /// 在删除键上往左滑（二期）：滑过 60pt 就清空——正在拼的拼音清掉重来；否则清掉光标前面的字，清掉的字暂存起来，顶栏出「撤销」能原样放回去
+    /// 在删除键上滑动（对标豆包）：往左滑 60pt 或往上滑 36pt 清空——正在拼的拼音清掉重来；否则清掉光标前面的字，清掉的字暂存起来。
+    /// 清完往下滑 36pt（或点顶栏「撤销」）原样放回去。说话中清空：这段话不要了，录音跟着停
     private func deleteDrag(_ dx: CGFloat, _ dy: CGFloat) -> Bool {
-        guard dx < -60, -dx > abs(dy) * 1.5 else { return clearing }
-        if !clearing {
-            clearing = true
-            deleteTimer?.invalidate()
-            deleteTimer = nil
+        if clearing { return true }
+        let left = dx < -60 && -dx > abs(dy) * 1.5
+        let up = dy < -36 && -dy > abs(dx) * 1.5
+        let down = dy > 36 && dy > abs(dx) * 1.5 && !clearedBeforePress.isEmpty
+        guard left || up || down else { return false }
+        clearing = true
+        deleteTimer?.invalidate()
+        deleteTimer = nil
+        keyFeedback()
+        if down {
+            clearedText = clearedBeforePress
+            undoClear()
+        } else {
+            if recordingNow {
+                pttActive = false
+                send("stop", ["src": "clear"])
+            }
             clearAll()
         }
         return true
@@ -3639,6 +3818,10 @@ final class KeyboardViewController: UIInputViewController {
         if composing {
             buffer = ""
             cands = []
+            if !picked.isEmpty {
+                picked = []
+                refreshCtx()
+            }
             updatePredictions()
             refreshBar()
             return

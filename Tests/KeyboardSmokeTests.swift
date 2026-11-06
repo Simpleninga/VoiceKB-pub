@@ -354,6 +354,34 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertEqual(vc.live, "你好。", "回到屏幕上就替换成润色后的")
     }
 
+    /// 收起键盘 / 切到别的 App：录音跟着结束，回来时麦克风是关着的（用户 11-06）
+    func testRecordingStopsWhenKeyboardHides() {
+        let vc = makeKeyboard()
+        vc.handle(recording(1, "你好"))
+        XCTAssertNotEqual(vc.lastCmd, "stop")
+        vc.viewDidDisappear(false)
+        XCTAssertEqual(vc.lastCmd, "stop")
+    }
+
+    /// 没录音时收起键盘什么也不发
+    func testHidingWhileIdleSendsNothing() {
+        let vc = makeKeyboard()
+        vc.handle(idleSnap())
+        vc.viewDidDisappear(false)
+        XCTAssertNotEqual(vc.lastCmd, "stop")
+    }
+
+    /// 没待命时点麦克风要跳主 App 开录：键盘被切走正是为了录音，主 App 比键盘先进入录音状态也不能停
+    func testJumpingToMainAppKeepsRecording() {
+        let vc = makeKeyboard()
+        vc.fullAccessProbe = { true }
+        vc.handle(idleSnap())
+        tapID(vc, "mic")
+        vc.handle(recording(1, ""))
+        vc.viewDidDisappear(false)
+        XCTAssertNotEqual(vc.lastCmd, "stop")
+    }
+
     /// 键盘实例读到 App 里记的数之前不写回去
     func testNoWriteBackBeforeSynced() {
         let vc = makeKeyboard()
@@ -1164,6 +1192,66 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertEqual(vc.buffer, "", "左滑够远，清空")
         r.fingerUp(1, at: CGPoint(x: c.x - 80, y: c.y), time: 0.4, cancelled: false)
         XCTAssertEqual(vc.buffer, "")
+    }
+
+    /// 删除键上滑清空拼音；清空输入框以后下滑撤回（对标豆包）
+    func testDeleteSwipeUpClearsAndSwipeDownRestores() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        for c in ["n", "i", "h", "a", "o"] { tap(vc, c) }
+        let del = try keyNamed(vc, id: "delete")
+        let c = center(del, in: r)
+        r.fingerDown(1, at: c, time: 0)
+        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 20), time: 0.1)
+        XCTAssertEqual(vc.buffer, "niha", "滑得不够远不清")
+        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 50), time: 0.2)
+        XCTAssertEqual(vc.buffer, "", "上滑够远，清空")
+        r.fingerUp(1, at: CGPoint(x: c.x, y: c.y - 50), time: 0.3, cancelled: false)
+    }
+
+    /// 说话中在删除键上滑清空：这段话不要了，录音跟着停
+    func testClearWhileRecordingStopsIt() throws {
+        let vc = makeKeyboard()
+        let r = try XCTUnwrap(vc.router)
+        vc.handle(recording(1, "你好"))
+        let del = try keyNamed(vc, id: "delete")
+        let c = center(del, in: r)
+        r.fingerDown(1, at: c, time: 0)
+        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 50), time: 0.1)
+        XCTAssertEqual(vc.lastCmd, "stop")
+        r.fingerUp(1, at: CGPoint(x: c.x, y: c.y - 50), time: 0.2, cancelled: false)
+    }
+
+    /// 分段选词：选了一段，字留在拼音行、拼音接着选；退格删完剩下的拼音就撤回这一段（多次打字时能改错）
+    func testPartialPickStaysInCompositionLine() throws {
+        let vc = makeKeyboard()
+        for c in "jintiantianqi" { tap(vc, String(c)) }
+        pickTitle(vc, "今天")
+        XCTAssertEqual(vc.buffer, "tianqi", "今天吃掉前面的拼音")
+        let comp = all(vc.view).compactMap { $0 as? UILabel }.first(where: { $0.accessibilityIdentifier == "comp" && !$0.isHidden })
+        XCTAssertEqual(comp?.text?.hasPrefix("今天"), true, "选好的字留在拼音行：\(comp?.text ?? "")")
+        for _ in 0..<6 { tapID(vc, "delete") }
+        XCTAssertEqual(vc.buffer, "jintian", "拼音删完，今天 变回拼音")
+    }
+
+    /// 展开面板能按 单字 / 词语 筛，长拼音还能按音节筛
+    func testPanelFiltersBySingleAndWords() throws {
+        let vc = makeKeyboard()
+        for c in "shijian" { tap(vc, String(c)) }
+        try XCTUnwrap(button(vc, "expand")).sendActions(for: .touchUpInside)
+        vc.view.layoutIfNeeded()
+        let panel = try XCTUnwrap(all(vc.view).first(where: { $0.accessibilityIdentifier == "panel" }))
+        func shown() -> [String] { all(panel).compactMap { ($0 as? UIButton) }.filter { !$0.isHidden }.compactMap { $0.currentTitle } }
+        XCTAssertTrue(shown().contains("时间"))
+        try XCTUnwrap(button(vc, "filter1")).sendActions(for: .touchUpInside)
+        XCTAssertFalse(shown().isEmpty)
+        XCTAssertTrue(shown().allSatisfy { $0.count == 1 }, "单字：\(shown().prefix(10))")
+        try XCTUnwrap(button(vc, "filter2")).sendActions(for: .touchUpInside)
+        XCTAssertTrue(shown().contains("时间"))
+        XCTAssertTrue(shown().allSatisfy { $0.count > 1 }, "词语：\(shown().prefix(10))")
+        try XCTUnwrap(button(vc, "panelDelete")).sendActions(for: .touchUpInside)
+        XCTAssertEqual(vc.buffer, "shijia", "面板里的删除键删一个字母，面板留着")
+        XCTAssertFalse(panel.isHidden)
     }
 
     /// 回车键按输入框的要求换字
