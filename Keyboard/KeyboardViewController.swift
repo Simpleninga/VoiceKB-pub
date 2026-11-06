@@ -24,6 +24,8 @@ final class KeyButton: UIButton {
     var swipeUp: (text: String, action: () -> Void)?
     /// 按住不放时手指的位移（空格上左右滑移光标、删除键左滑清空）；返回 true = 这次触摸算滑动，松手不再当点按
     var onDrag: ((CGFloat, CGFloat) -> Bool)?
+    /// 滑动过以后手指正常松开（系统取消不算）
+    var onDragRelease: (() -> Void)?
     /// 手指现在还按在它上面（接线后 UIControl 自己的 isTracking 不管用了）
     var touchHeld = false
     /// 这次触摸从按下到现在，手指横竖挪了多少（KeyboardRoot 每次更新）
@@ -373,6 +375,7 @@ final class KeyboardRoot: UIView {
             k.sendActions(for: .touchCancel)
         } else if f.dragged {
             stats.dragged += 1
+            k.onDragRelease?()
             k.sendActions(for: .touchCancel)      // 滑动过的不当点按
         } else {
             // 松手时手指离开键 40pt 以内都算点到（空格这类只认「松手」的键，手指一滑出边不再丢）
@@ -411,6 +414,8 @@ final class KeyPreview: UIView {
         label.font = .systemFont(ofSize: 32)
         label.textAlignment = .center
         label.textColor = .label
+        label.adjustsFontSizeToFitWidth = true      // 「上滑清空」这种字多的气泡缩小一点
+        label.minimumScaleFactor = 0.4
         addSubview(label)
     }
 
@@ -1577,6 +1582,9 @@ final class KeyboardViewController: UIInputViewController {
     private var pressDeleted: String?      // 这次按下去就删掉的那个字（左滑清空时算进「撤销」）
     private var clearedText = ""           // 删除键清空时清掉的字，顶栏「撤销」、删除键下滑放回去用
     private var clearedBeforePress = ""    // 这次按下删除键之前还能撤回的字（按下那一下算打字，会把 clearedText 清掉）
+    private enum DeleteSwipe { case clear, undo }
+    private var delArmed: DeleteSwipe?     // 竖着滑过了线，松手就执行
+    private static let delSwipe: CGFloat = 22      // 半个键高
     private(set) var live = ""     // 这次听写里「当前这一段」已经打进输入框的文字：说话时跟着识别结果变，润色好了被替换
     private var liveSID = -1       // live 是第几次录音的
     private var liveFinal = false  // 已经收到过结果（再替换前要先确认光标还在这段文字后面）
@@ -1604,6 +1612,7 @@ final class KeyboardViewController: UIInputViewController {
     private let panel = CandidatePanel()
     private let panelSide = PanelSide()
     private let panelDelete = KeyButton(type: .custom)
+    private var panelSideWidth: NSLayoutConstraint!
     private var panelOpen = false
     private weak var spaceKey: KeyButton?
     private var spaceWave: WaveView?
@@ -2025,11 +2034,12 @@ final class KeyboardViewController: UIInputViewController {
         panelDelete.layer.cornerRadius = 8
         panelDelete.isHidden = true
         panelDelete.addTarget(self, action: #selector(panelDeleteTapped), for: .touchUpInside)
+        panelSideWidth = panelSide.widthAnchor.constraint(equalToConstant: PanelSide.width)
         NSLayoutConstraint.activate([
             panelSide.topAnchor.constraint(equalTo: keyArea.topAnchor),
             panelSide.bottomAnchor.constraint(equalTo: keyArea.bottomAnchor),
             panelSide.leadingAnchor.constraint(equalTo: keyArea.leadingAnchor),
-            panelSide.widthAnchor.constraint(equalToConstant: PanelSide.width),
+            panelSideWidth,
             panel.topAnchor.constraint(equalTo: keyArea.topAnchor),
             panel.bottomAnchor.constraint(equalTo: keyArea.bottomAnchor),
             panel.leadingAnchor.constraint(equalTo: panelSide.trailingAnchor),
@@ -2642,8 +2652,12 @@ final class KeyboardViewController: UIInputViewController {
     private func deleteKey() -> KeyButton {
         let del = styled(symbol: "delete.left", isFunction: true)
         del.accessibilityIdentifier = "delete"
-        del.onDrag = { [weak self] dx, dy in self?.deleteDrag(dx, dy) ?? false }
-        del.addTarget(self, action: #selector(delDown), for: .touchDown)
+        del.onDrag = { [weak self, weak del] dx, dy in
+            guard let self, let del else { return false }
+            return self.deleteDrag(dx, dy, on: del)
+        }
+        del.onDragRelease = { [weak self] in self?.deleteSwipeRelease() }
+        del.addTarget(self, action: #selector(delDown(_:)), for: .touchDown)
         del.addTarget(self, action: #selector(delUp), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         return del
     }
@@ -2705,7 +2719,8 @@ final class KeyboardViewController: UIInputViewController {
         if panelOpen { closePanel(); return }
         guard composing else { return }
         panel.isHidden = false
-        panelSide.isHidden = false
+        panelSide.isHidden = !chinese      // 英文没有单字词语之分
+        panelSideWidth.constant = chinese ? PanelSide.width : 0
         panelDelete.isHidden = false
         panelOpen = true
         candBar.setExpanded(true)
@@ -2716,7 +2731,7 @@ final class KeyboardViewController: UIInputViewController {
         panelAll = candidateList(limit: chinese ? 200 : 100, expanded: true)
         // 筛音节：候选吃掉的长度不止一种时（拼音有好几个音节）才有得选，从短到长
         let lens = Array(Set(panelAll.map { $0.consume })).sorted()
-        panelSide.set(chips: lens.count > 1 ? lens.map { (title: engine?.display(String(buffer.prefix($0))) ?? "", consume: $0) } : [])
+        panelSide.set(chips: lens.count > 1 && nineSyll == nil ? lens.map { (title: engine?.display(String(buffer.prefix($0))) ?? "", consume: $0) } : [])
         filterPanel(0, nil)
     }
 
@@ -3769,15 +3784,18 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: 删除键（按住连删）
 
-    @objc private func delDown() {
+    @objc private func delDown(_ del: KeyButton) {
         keyFeedback()
         clearing = false
+        delArmed = nil
         pressDeleted = composing ? nil : contextBefore()?.last.map { String($0) }
         clearedBeforePress = clearedText
         deleteOnce()
         deleteTimer?.invalidate()
-        deleteTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
-            self?.deleteTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { _ in
+        deleteTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self, weak del] _ in
+            guard let self, let del else { return }
+            self.preview.show("上滑清空", over: del, in: self.view, fill: self.keyColor)      // 按住连删时告诉用户还有这一招
+            self.deleteTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
                 self?.deleteOnce()
             }
         }
@@ -3786,31 +3804,59 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func delUp() {
         deleteTimer?.invalidate()
         deleteTimer = nil
+        delArmed = nil
+        preview.hide()
     }
 
-    /// 在删除键上滑动（对标豆包）：往左滑 60pt 或往上滑 36pt 清空——正在拼的拼音清掉重来；否则清掉光标前面的字，清掉的字暂存起来。
-    /// 清完往下滑 36pt（或点顶栏「撤销」）原样放回去。说话中清空：这段话不要了，录音跟着停
-    private func deleteDrag(_ dx: CGFloat, _ dy: CGFloat) -> Bool {
+    /// 在删除键上滑动（照豆包 ButtonBackspace::OnButtonMove）：
+    /// 往左滑 60pt 立刻清空；竖着滑过半个键高冒气泡，松手才算，滑回来就取消——往上 = 清空，刚清空过往下 = 撤回
+    private func deleteDrag(_ dx: CGFloat, _ dy: CGFloat, on del: KeyButton) -> Bool {
         if clearing { return true }
-        let left = dx < -60 && -dx > abs(dy) * 1.5
-        let up = dy < -36 && -dy > abs(dx) * 1.5
-        let down = dy > 36 && dy > abs(dx) * 1.5 && !clearedBeforePress.isEmpty
-        guard left || up || down else { return false }
+        if dx < -60, -dx > abs(dy) * 1.5 {
+            clearing = true
+            deleteTimer?.invalidate()
+            deleteTimer = nil
+            preview.hide()
+            keyFeedback()
+            clearForSwipe()
+            return true
+        }
+        let up = dy < -Self.delSwipe && -dy > abs(dx)
+        let down = dy > Self.delSwipe && dy > abs(dx) && !clearedBeforePress.isEmpty
+        let want: DeleteSwipe? = up ? .clear : (down ? .undo : nil)
+        if want != delArmed {
+            delArmed = want
+            deleteTimer?.invalidate()
+            deleteTimer = nil
+            if let want {
+                keyFeedback()
+                preview.show(want == .clear ? "清空" : "撤回", over: del, in: view, fill: keyColor)
+            } else {
+                preview.hide()
+            }
+        }
+        return delArmed != nil
+    }
+
+    private func deleteSwipeRelease() {
+        guard let a = delArmed else { return }
+        delArmed = nil
         clearing = true
-        deleteTimer?.invalidate()
-        deleteTimer = nil
-        keyFeedback()
-        if down {
+        if a == .clear {
+            clearForSwipe()
+        } else {
             clearedText = clearedBeforePress
             undoClear()
-        } else {
-            if recordingNow {
-                pttActive = false
-                send("stop", ["src": "clear"])
-            }
-            clearAll()
         }
-        return true
+    }
+
+    /// 说话中清空：这段话不要了，录音跟着停
+    private func clearForSwipe() {
+        if recordingNow {
+            pttActive = false
+            send("stop", ["src": "clear"])
+        }
+        clearAll()
     }
 
     private func clearAll() {

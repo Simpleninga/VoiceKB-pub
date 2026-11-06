@@ -457,6 +457,15 @@ final class KeyboardSmokeTests: XCTestCase {
         let b = makeKeyboard()
         for c in ["n", "i", "h", "a", "o"] { tap(b, c) }
         try shot(b, "5-typing")
+        let c = makeKeyboard()
+        for l in "jintiantianqi" { tap(c, String(l)) }
+        try shot(c, "6-long")
+        pickTitle(c, "今天")
+        try shot(c, "7-partial")
+        try XCTUnwrap(button(c, "expand")).sendActions(for: .touchUpInside)
+        try shot(c, "8-panel")
+        try XCTUnwrap(button(c, "filter1")).sendActions(for: .touchUpInside)
+        try shot(c, "9-panel-single")
     }
 
     /// 按下字母键冒出放大气泡，松手收起；靠边的键气泡不能伸出键盘
@@ -1202,11 +1211,15 @@ final class KeyboardSmokeTests: XCTestCase {
         let del = try keyNamed(vc, id: "delete")
         let c = center(del, in: r)
         r.fingerDown(1, at: c, time: 0)
-        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 20), time: 0.1)
-        XCTAssertEqual(vc.buffer, "niha", "滑得不够远不清")
-        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 50), time: 0.2)
-        XCTAssertEqual(vc.buffer, "", "上滑够远，清空")
-        r.fingerUp(1, at: CGPoint(x: c.x, y: c.y - 50), time: 0.3, cancelled: false)
+        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 30), time: 0.1)
+        XCTAssertEqual(vc.buffer, "niha", "滑过线只冒气泡，松手才清空")
+        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 5), time: 0.2)
+        r.fingerUp(1, at: CGPoint(x: c.x, y: c.y - 5), time: 0.3, cancelled: false)
+        XCTAssertEqual(vc.buffer, "niha", "滑回来再松手 = 反悔")
+        r.fingerDown(2, at: c, time: 1)
+        r.fingerMoved(2, to: CGPoint(x: c.x, y: c.y - 30), time: 1.1)
+        r.fingerUp(2, at: CGPoint(x: c.x, y: c.y - 30), time: 1.2, cancelled: false)
+        XCTAssertEqual(vc.buffer, "", "滑过线松手，清空")
     }
 
     /// 说话中在删除键上滑清空：这段话不要了，录音跟着停
@@ -1217,9 +1230,9 @@ final class KeyboardSmokeTests: XCTestCase {
         let del = try keyNamed(vc, id: "delete")
         let c = center(del, in: r)
         r.fingerDown(1, at: c, time: 0)
-        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 50), time: 0.1)
+        r.fingerMoved(1, to: CGPoint(x: c.x, y: c.y - 30), time: 0.1)
+        r.fingerUp(1, at: CGPoint(x: c.x, y: c.y - 30), time: 0.2, cancelled: false)
         XCTAssertEqual(vc.lastCmd, "stop")
-        r.fingerUp(1, at: CGPoint(x: c.x, y: c.y - 50), time: 0.2, cancelled: false)
     }
 
     /// 分段选词：选了一段，字留在拼音行、拼音接着选；退格删完剩下的拼音就撤回这一段（多次打字时能改错）
