@@ -82,6 +82,7 @@ final class Dictation: ObservableObject {
     private var finished = true
     private var wantEngine = false
     private var deadline = Date.distantPast // 保活到什么时候
+    private var leaving = false             // 这次录音是键盘收起 / 离开时停的：收完尾就不再待命，手机的麦克风指示马上灭（用户 11-07；设成「一直开」的照旧）
     private var recStart = Date()
     private var lastActive = Date()           // 本 App 上次在前台的时间（见 watchKeyboardGone）
     private var resultText = ""
@@ -351,7 +352,8 @@ final class Dictation: ObservableObject {
     }
 
     private func extendKeepalive() {
-        let m = keepMin
+        let m = leaving && keepMin > 0 ? 0 : keepMin
+        leaving = false
         deadline = m < 0 ? .distantFuture : Date().addingTimeInterval(Double(m) * 60)
     }
 
@@ -383,6 +385,7 @@ final class Dictation: ObservableObject {
         let quiet = Date().timeIntervalSince(seen ?? since)
         if quiet > (seen == nil ? 15 : 4) {
             log("键盘 \(Int(quiet)) 秒没来取状态，当它不在屏幕上了，结束录音")
+            leaving = true
             stopRecording()
         }
     }
@@ -504,7 +507,11 @@ final class Dictation: ObservableObject {
             if let h = k["hot"] as? [String], !h.isEmpty { UserDefaults.standard.set(Array(h.prefix(60)), forKey: "kbHot") }
             learn(k["pairs"] as? [[String]] ?? [])
             startRecording()
-        case "stop": log("键盘：停止（\(k["src"] as? String ?? "?")）"); stopRecording()
+        case "stop":
+            let src = k["src"] as? String ?? "?"
+            log("键盘：停止（\(src)）")
+            if src == "hide", state == "recording" { leaving = true }
+            stopRecording()
         case "cut": cut(upTo: k["n"] as? Int ?? 0, count: k["k"] as? Int)
         case "learn": learn(k["pairs"] as? [[String]] ?? [])
         case "cancel": log("键盘：换了输入框，这次录音作废（\(k["src"] as? String ?? "?")）"); cancelRecording()

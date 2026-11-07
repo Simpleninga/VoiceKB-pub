@@ -382,6 +382,48 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertNotEqual(vc.lastCmd, "stop")
     }
 
+    /// 点收起：录音马上停。刚跳主 App 回来（6 秒内）也一样，那个例外只管系统切走（用户 11-07）
+    func testHideButtonStopsRecordingRightAfterJump() {
+        let vc = makeKeyboard()
+        vc.fullAccessProbe = { true }
+        vc.handle(idleSnap())
+        tapID(vc, "mic")
+        vc.handle(recording(1, ""))
+        tapID(vc, "hide")
+        XCTAssertEqual(vc.lastCmd, "stop")
+    }
+
+    /// 录音中点「收起」左边的齿轮：设置盖住键盘，录音要停（用户 11-07）
+    func testGearStopsRecording() {
+        let vc = makeKeyboard()
+        vc.handle(recording(1, "你好"))
+        tapID(vc, "gear")
+        XCTAssertEqual(vc.lastCmd, "stop")
+    }
+
+    /// 没录音时开设置什么也不发
+    func testGearWhileIdleSendsNothing() {
+        let vc = makeKeyboard()
+        vc.handle(idleSnap())
+        tapID(vc, "gear")
+        XCTAssertNotEqual(vc.lastCmd, "stop")
+    }
+
+    /// 跳主 App 开录、键盘已经回到屏幕上，再被划走 / 点空白收起：这次是真离开，要停（用户 11-07）
+    func testLeavingAfterReturnFromJumpStops() {
+        let vc = makeKeyboard()
+        vc.fullAccessProbe = { true }
+        vc.handle(idleSnap())
+        tapID(vc, "mic")
+        vc.handle(recording(1, ""))
+        vc.viewDidDisappear(false)
+        XCTAssertNotEqual(vc.lastCmd, "stop", "跳走那一下不停")
+        vc.viewDidAppear(false)
+        vc.handle(recording(1, ""))
+        vc.viewDidDisappear(false)
+        XCTAssertEqual(vc.lastCmd, "stop")
+    }
+
     /// 键盘实例读到 App 里记的数之前不写回去
     func testNoWriteBackBeforeSynced() {
         let vc = makeKeyboard()

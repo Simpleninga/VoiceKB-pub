@@ -1954,6 +1954,7 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        jumpedAt = .distantPast      // 跳主 App 已经回来了：之后再离开就是真离开，别再按「跳走开录」放过（用户 11-07）
         UserDefaults.standard.removeObject(forKey: "loading")      // 加载走完了
         HostApp.harvest()
         // 屏幕边缘的键（q p a l 和最下面一排）会被系统的边缘手势拖慢、甚至吞掉：关掉系统窗口手势的「延迟送触摸」
@@ -2150,6 +2151,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func toggleSettings() {
         if !settingsPanel.isHidden { closeSettings(); return }
+        stopVoiceIfRecording("gear")      // 设置盖住了键盘，录音不能在底下接着跑（用户 11-07）
         closePanel()
         settingsPanel.sync(haptic: hapticOn, nine: nine, fullAccess: hasFullAccess, learn: learnOn, learned: learnedCount, fuzzy: fuzzMask)
         settingsPanel.isHidden = false
@@ -3660,11 +3662,19 @@ final class KeyboardViewController: UIInputViewController {
         return false
     }
 
+    /// 用户自己点了别的（收起、设置）：录音马上停，已经打进去的字留着。不等 viewDidDisappear：那边有跳主 App 的例外，也可能赶不上进程被挂起
+    private func stopVoiceIfRecording(_ src: String) {
+        guard recordingNow else { return }
+        pttActive = false
+        send("stop", ["src": src])
+    }
+
     /// 收起键盘（顶栏右边的白圆）。第一次没收起来（宿主刚好在忙）0.4 秒后再来一次
     private func collapse() {
         collapseCount += 1
         keyFeedback()
         commitRaw()      // 没选完的拼音先原样落下，免得收起键盘时丢掉
+        stopVoiceIfRecording("hide")
         let dismiss = dismissAction ?? { [weak self] in self?.dismissKeyboard() }
         dismiss()
         let epoch = hideEpoch
