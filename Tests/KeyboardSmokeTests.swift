@@ -168,6 +168,34 @@ final class KeyboardSmokeTests: XCTestCase {
         XCTAssertNotEqual(candButtons(vc).first?.currentTitle, "词库词", "只打了一半不抢位")
     }
 
+    /// 照豆包「别处来的词最多排第二」：拼音撞上常用词（keshi 可是）时，词库词让常用词排第一、自己排第二
+    func testLexiconWordYieldsToCommonWord() {
+        let vc = makeKeyboard()
+        vc.lexZh = ["keshi": ["科室"]]
+        for c in "keshi".map({ String($0) }) { tap(vc, c) }
+        let t = candButtons(vc).compactMap { $0.currentTitle }
+        XCTAssertEqual(t.first, "可是", "常用词排第一：\(t.prefix(6))")
+        XCTAssertEqual(t.dropFirst().first, "科室", "词库词排第二：\(t.prefix(6))")
+    }
+
+    /// 自造词有常用整词时：拼过一次排第二（时间 是件），再直接选一次（用了两次）才排第一
+    func testPhraseUsedOnceStaysSecond() {
+        let vc = makeKeyboard()
+        for c in "shijian".map({ String($0) }) { tap(vc, c) }
+        pickTitle(vc, "是")
+        pickTitle(vc, "件")
+        XCTAssertTrue(vc.buffer.isEmpty)
+        for c in "shijian".map({ String($0) }) { tap(vc, c) }
+        var t = candButtons(vc).compactMap { $0.currentTitle }
+        XCTAssertEqual(t.first, "时间", "拼过一次的自造词不抢常用词：\(t.prefix(6))")
+        XCTAssertEqual(t.dropFirst().first, "是件", "排第二：\(t.prefix(6))")
+        pickTitle(vc, "是件")
+        XCTAssertTrue(vc.buffer.isEmpty)
+        for c in "shijian".map({ String($0) }) { tap(vc, c) }
+        t = candButtons(vc).compactMap { $0.currentTitle }
+        XCTAssertEqual(t.first, "是件", "用了两次排第一：\(t.prefix(6))")
+    }
+
     /// 个人学习：分两次选出「云朵」+「糕」→ 记成自造词，再打 yunduogao 第一个就是「云朵糕」；存到文件、新键盘实例也认；清空后就没了
     func testLearnsPhraseFromTwoPicks() {
         let vc = makeKeyboard()

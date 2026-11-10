@@ -29,22 +29,24 @@ def type_session(D, lm, user, s, syl, ctx):
         for t, cons, kind, fix, parts in pyengine.candidates(D, raw, 5, False, lm, prev, user)[:5]:
             k = len(t)
             if rest.startswith(t) and cons == len("".join(syl[i:i + k])) and (best is None or k > len(best[0])):
-                best = (t, fix or raw[:cons], parts, cons)
+                best = (t, fix or raw[:cons], parts, cons, kind)
         if not best:
             return None
-        t, key, parts, cons = best
-        chunks.append((t, key, parts))
+        t, key, parts, cons, kind = best
+        chunks.append((t, key, parts, kind))
         rest, raw, i, prev = rest[len(t):], raw[cons:], i + len(t), parts[-1]
     return chunks
 
 
 def learn_session(D, user, chunks, prev):
-    user.learn([w for _, _, parts in chunks for w in parts], prev)
+    user.learn([w for _, _, parts, _ in chunks for w in parts], prev)
     if len(chunks) >= 2:
-        text = "".join(t for t, _, _ in chunks)
-        key = "".join(k for _, k, _ in chunks).encode()
+        text = "".join(t for t, _, _, _ in chunks)
+        key = "".join(k for _, k, _, _ in chunks).encode()
         if 2 <= len(text) <= 6 and not any(D.entry(e)[0] == text for e in D.exact(key)):
             user.add_phrase(key, text)
+    elif chunks and chunks[0][3] == "自":      # 直接选了自造词 / 词库词：算它又用了一次（用到两次才排最前）
+        user.add_phrase(chunks[0][1].encode(), chunks[0][0])
 
 
 def top1(D, lm, user, rows):

@@ -1,6 +1,6 @@
 import Foundation
 
-/// 个人学习：选过的词、整句、语音整理好的话都记下来，按用过的次数给代价打折（「越用越懂你」）。
+/// 个人学习：选过的词、整句都记下来，按用过的次数给代价打折（「越用越懂你」）。语音结果 11-10 起不再学进来（照豆包）。
 /// 和 Python 参考版 tools/pyengine.py 的 User 逐字一致（CI 对拍），参数怎么调出来的见那边和 tools/bench/learn.py。
 /// w = 词（≥2 个字）的次数；b = （上一个词, 词）的次数；p = 自造词（分几次选出来的短词组，词典里没有这个键 + 词）。
 /// 都留「最近一次的序号」，满了扔掉最久没用的。存成一个文本文件（键盘扩展自己的容器里，免费签名没有 App Group）。
@@ -17,6 +17,8 @@ final class UserModel {
     private(set) var w: [String: Count] = [:]
     private(set) var b: [Pair: Count] = [:]
     private(set) var p: [Phrase: Count] = [:]
+    /// 服务器词库下发的词（照豆包：云端词和自己学的分开放）：只进词格，不存进学习文件、不算「已记住」，清空学习也不丢
+    private(set) var lex: Set<Phrase> = []
     private(set) var seq = 0
     private var plistCache: [Phrase]?
     private var pidx: [[UInt8]: [Int]] = [:]
@@ -53,7 +55,7 @@ final class UserModel {
     /// 自造词按（键, 词的 UTF-8）排好的表：词格里它们的虚词条序号 = 词典条数 + 下标
     var plist: [Phrase] {
         if let c = plistCache { return c }
-        let l = p.keys.sorted { $0.key != $1.key ? $0.key.lexicographicallyPrecedes($1.key) : Array($0.word.utf8).lexicographicallyPrecedes(Array($1.word.utf8)) }
+        let l = Set(p.keys).union(lex).sorted { $0.key != $1.key ? $0.key.lexicographicallyPrecedes($1.key) : Array($0.word.utf8).lexicographicallyPrecedes(Array($1.word.utf8)) }
         pidx = [:]
         for (i, x) in l.enumerated() { pidx[x.key, default: []].append(i) }
         plistCache = l
@@ -66,9 +68,17 @@ final class UserModel {
         return pidx[key] ?? []
     }
 
-    var hasPhrases: Bool { !p.isEmpty }
+    var hasPhrases: Bool { !p.isEmpty || !lex.isEmpty }
 
+    /// 自己用过几次（词库下发、自己没拼过的是 0）
     func count(of ph: Phrase) -> Int { p[ph]?.n ?? 0 }
+
+    /// 换上服务器词库的词；dropOld：以前的版本把它们当自造词塞进了学习文件（次数 1），挪过来时顺手清掉（只做一次）
+    func setLex(_ l: [Phrase], dropOld: Bool = false) {
+        lex = Set(l)
+        if dropOld { for x in l where p[x]?.n == 1 { p[x] = nil } }
+        plistCache = nil
+    }
 
     /// 词 w（接在 prev 后面）用过的打折
     func bonus(_ prev: String?, _ w: String) -> Int {

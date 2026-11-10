@@ -1749,9 +1749,17 @@ final class KeyboardViewController: UIInputViewController {
     private var session: [(text: String, key: String, parts: [String])] = []
     private var sessionPrev: String?           // 这次拼字前面的上文最后一个词
     private var userSave: DispatchWorkItem?
+    private var lexMoved = false               // 这个键盘实例已经为「词库词挪出学习文件」取过一次词库
 
     private static func loadUser() -> UserModel {
-        UserModel(text: (try? String(contentsOf: userFile, encoding: .utf8)) ?? "")
+        let u = UserModel(text: (try? String(contentsOf: userFile, encoding: .utf8)) ?? "")
+        u.setLex(savedLex())
+        return u
+    }
+
+    /// 词库下发的中文词（照豆包：和自己学的分开存，不进学习文件）：UserDefaults「lexPh」，一条 = [词, 拼音键]
+    private static func savedLex() -> [UserModel.Phrase] {
+        (UserDefaults.standard.array(forKey: "lexPh") as? [[String]] ?? []).compactMap { $0.count == 2 ? UserModel.Phrase(key: Array($0[1].utf8), word: $0[0]) : nil }
     }
 
     /// 开始拼一个新词：记下上文（学词对用），上一回没拼完的作废
@@ -1767,22 +1775,24 @@ final class KeyboardViewController: UIInputViewController {
         guard last, buffer.isEmpty else { return }
         defer { session = [] }
         guard let e = engine, let u = e.user else { return }
-        let chunks = session, prev = sessionPrev
+        let chunks = session, prev = sessionPrev, kind = c.kind
         onEngine {
             u.learn(chunks.flatMap { $0.parts }, prev: prev)
             if chunks.count >= 2 {
                 let text = chunks.map { $0.text }.joined()
                 let key = Array(chunks.map { $0.key }.joined().utf8)
                 if (2...6).contains(text.unicodeScalars.count), !e.hasWord(key, text) { u.addPhrase(key: key, word: text) }
+            } else if kind == .user, let one = chunks.first {      // 直接选了自造词 / 词库词：算它又用了一次（用到两次才排最前）
+                u.addPhrase(key: Array(one.key.utf8), word: one.text)
             }
         }
         scheduleUserSave()
     }
 
-    /// 词库的中文词：拼音 → 词（出候选时排第一）。市面新词不在内，别抢用户常用的字
+    /// 词库的中文词：拼音 → 词（出候选时排第一，撞上常用词就排第二）。市面新词不在内，别抢用户常用的字
     var lexZh = UserDefaults.standard.dictionary(forKey: "lexZh") as? [String: [String]] ?? [:]
 
-    /// 词库下发的词：中文进自造词和 lexZh（打 yihuantong 就有医患通），英文进联想（打 deeps 就有 DeepSeek）
+    /// 词库下发的词：中文进词库词（lexPh，进词格不进学习文件）和 lexZh（打 yihuantong 就有医患通），英文进联想（打 deeps 就有 DeepSeek）
     private func syncLex(_ ver: String) {
         Link.lexWords { [weak self] list in
             guard let self, !list.isEmpty else { return }
@@ -1800,11 +1810,12 @@ final class KeyboardViewController: UIInputViewController {
             UserDefaults.standard.set(top, forKey: "lexZh")
             self.words?.extra = en
             self.lexZh = top
-            guard let e = self.engine, let u = e.user else { return }
+            guard let e = self.engine else { return }
             self.onEngine {
-                for (w, k) in zh where (2...6).contains(w.unicodeScalars.count) && !e.hasWord(k, w) && u.count(of: .init(key: k, word: w)) == 0 {
-                    u.addPhrase(key: k, word: w)
-                }
+                let first = UserDefaults.standard.object(forKey: "lexPh") == nil      // 头一回：老版本塞进学习文件的词库词要清出来
+                let ph = zh.filter { (2...6).contains($0.0.unicodeScalars.count) && !e.hasWord($0.1, $0.0) }
+                UserDefaults.standard.set(ph.map { [$0.0, String(decoding: $0.1, as: UTF8.self)] }, forKey: "lexPh")
+                e.user?.setLex(ph.map { UserModel.Phrase(key: $0.1, word: $0.0) }, dropOld: first)
             }
             self.scheduleUserSave()
         }
@@ -1850,7 +1861,11 @@ final class KeyboardViewController: UIInputViewController {
         let e = engine, on = learnOn, url = Self.userFile
         engineQueue.sync {
             try? FileManager.default.removeItem(at: url)
-            if on { e?.user = UserModel() }
+            if on {
+                let nu = UserModel()
+                nu.setLex(Self.savedLex())       // 词库词不是学来的，清空学习不丢
+                e?.user = nu
+            }
         }
         session = []
         settingsPanel.sync(haptic: hapticOn, nine: nine, fullAccess: fullAccess, learn: learnOn, learned: 0, cleared: true, fuzzy: fuzzMask)
@@ -3086,9 +3101,11 @@ final class KeyboardViewController: UIInputViewController {
                 : (e?.candidates(buf, limit: limit, expanded: expanded, ctx: ctx) ?? [])
             var out = r.isEmpty ? [PinyinCandidate(text: buf.replacingOccurrences(of: "'", with: ""), consume: buf.count, kind: .raw)] : r
             // 词库的词：拼音完全对上就排第一。自造词只进整句，两个字的词（智谱、混元）拼不过常用词，根本出不来
+            // 照豆包「别处来的词最多排第二」：这个拼音有常用整词（keshi 可是、yiqun 一群）就让它排第一，词库词排第二
             if !nine, let ws = lex[buf.replacingOccurrences(of: "'", with: "")] {
                 out.removeAll { ws.contains($0.text) }
-                out.insert(contentsOf: ws.map { PinyinCandidate(text: $0, consume: buf.count, kind: .raw) }, at: 0)
+                let at = (e?.hasCommonWord(buf.replacingOccurrences(of: "'", with: ""), except: ws) ?? false) ? min(1, out.count) : 0
+                out.insert(contentsOf: ws.map { PinyinCandidate(text: $0, consume: buf.count, kind: .raw) }, at: at)
             }
             // 中英混输（二期）：打的字母本身是个常见英文词 / 缩写（wifi、ok、ppt…）就加一条英文候选：拼音盖不住整串时排第一，盖得住就排第三
             if !nine, let en = words?.mixedWord(buf) {
@@ -3282,7 +3299,11 @@ final class KeyboardViewController: UIInputViewController {
             failedPolls = 0
         }
         apply(s)
-        if s.ok, let v = s.app["lexv"] as? String, !v.isEmpty, v != UserDefaults.standard.string(forKey: "lexVer") { syncLex(v) }
+        if s.ok, let v = s.app["lexv"] as? String, !v.isEmpty,
+           v != UserDefaults.standard.string(forKey: "lexVer") || (UserDefaults.standard.object(forKey: "lexPh") == nil && !lexMoved) {
+            lexMoved = true          // 老版本把词库词塞在学习文件里：词库版本没变也要取一次，挪到 lexPh
+            syncLex(v)
+        }
         // 录音归属只由「屏幕上这个键盘」处理：后台还活着的另一个 App 的键盘实例也会被通知叫醒走到这里，
         // 以前它们照样「认领」和「作废」，用户开着两个 App 的输入框时，刚按开始就被对方作废了
         if visible, s.ok {
@@ -3792,10 +3813,7 @@ final class KeyboardViewController: UIInputViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in   // 输入框的文字稍后才读得到
             if self?.live == t { self?.watch(t) }
         }
-        if let e = engine, let lm = e.lm, let u = e.user {      // 语音整理好的话也学（你常说的词、搭配）
-            onEngine { u.learnText(lm, t) }
-            scheduleUserSave()
-        }
+        // 语音整理好的话不再学进打字（照豆包：打字词库帮语音识别，语音结果不反过来改打字排序；11-10 起）
         refreshBar()
     }
 

@@ -234,6 +234,13 @@ final class PinyinEngine {
         key.withUnsafeBufferPointer { dict.exact($0.baseAddress!, key.count) }.contains { dict.word($0) == word }
     }
 
+    /// 这个拼音有没有常用整词（不冷僻：权重 ≥ weakQ），except 里的不算：词库词撞上了就让常用词排第一、自己排第二
+    func hasCommonWord(_ key: String, except: [String]) -> Bool {
+        let k = Array(key.utf8)
+        guard !k.isEmpty else { return false }
+        return k.withUnsafeBufferPointer { dict.exact($0.baseAddress!, k.count) }.contains { dict.rawWeight($0) >= Self.weakQ && !except.contains(dict.word($0)) }
+    }
+
     /// 语言模型里有没有这个词（上文是不是个词）
     func knows(_ w: String) -> Bool { (lm?.id(of: w) ?? -1) >= 0 }
 
@@ -984,17 +991,21 @@ final class PinyinEngine {
                 return (base - u.bonus(ctxw, dict.word(e)) + (fpen[e] ?? 0), k, e)
             }.sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }.map { $0.2 }
         }
-        // 自造词：键正好是整个输入串的，排在最前面（用得多的在前）
-        let mine: [String] = (u == nil || !s.cuts.isEmpty) ? [] : u!.phrases(b).sorted {
+        // 自造词 / 词库词：键正好是整个输入串的（用得多的在前）。照豆包「别处来的词最多排第二」：
+        // 自己拼过两次以上的排最前；只拼过一次的、词库下发的，有常用整词（不冷僻）时排在第一个整词后面，没有才排最前
+        let weak = !full.isEmpty && full.map { dict.rawWeight($0) }.max()! < Self.weakQ
+        let mineIdx: [Int] = (u == nil || !s.cuts.isEmpty) ? [] : u!.phrases(b).sorted {
             let a = u!.count(of: pl[$0]), c = u!.count(of: pl[$1])
             return a != c ? a > c : $0 < $1
-        }.map { pl[$0].word }
+        }
+        let firm = { (i: Int) -> Bool in full.isEmpty || weak || u!.count(of: pl[i]) >= 2 }
+        let mine = mineIdx.filter(firm).map { pl[$0].word }
+        let mineLate = mineIdx.filter { !firm($0) }.map { pl[$0].word }
         let top = full.isEmpty ? 0 : full.map { dict.logWeight($0) }.max()!
         let whole = sentence(n)
         // 纠错：输入串不是任何词（也不是任何词的开头、连不成句）= 多半打错了，纠错候选排最前；
         // 是个词但很冷僻（zhidan 制单、haide 害的）= 可能打错，纠错候选插在前两个整词后面；展开面板里总是补在最后
-        let typo = full.isEmpty && mine.isEmpty && whole == nil && b.withUnsafeBufferPointer({ dict.prefix($0.baseAddress!, n) }).isEmpty
-        let weak = !full.isEmpty && full.map { dict.rawWeight($0) }.max()! < Self.weakQ
+        let typo = full.isEmpty && mineIdx.isEmpty && whole == nil && b.withUnsafeBufferPointer({ dict.prefix($0.baseAddress!, n) }).isEmpty
         var fz: [(Int, Int)] = []
         if s.cuts.isEmpty, (n >= 3 && (typo || weak)) || (expanded && n >= 2) {
             fz = fuzzy(b, cap: expanded ? 30 : 4)
@@ -1039,7 +1050,10 @@ final class PinyinEngine {
             rest.sort { ($0.0, $0.1, $0.2) < ($1.0, $1.1, $1.2) }
             pick = [pick[0]] + rest.map { $0.3 }
         }
-        for i in (weak ? Array(pick.prefix(2)) : pick) { push(dict.word(i), n, dict.keyLength(i) == n ? .full : .assoc) }
+        for (k, i) in (weak ? Array(pick.prefix(2)) : pick).enumerated() {
+            push(dict.word(i), n, dict.keyLength(i) == n ? .full : .assoc)
+            if k == 0 { for w in mineLate { push(w, n, .user) } }
+        }
         if weak {
             for (i, _) in fz.prefix(3) { push(dict.word(i), n, .fuzzy, fixKey(i)) }
             for i in pick.dropFirst(2) { push(dict.word(i), n, .full) }

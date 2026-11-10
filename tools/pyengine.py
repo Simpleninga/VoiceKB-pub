@@ -257,7 +257,7 @@ def step_cost3(lm, p2, last, lid, uni):
 
 
 # ---- 个人学习（2026-10-24）----
-# 选过的字词、整句、语音整理好的话都记下来，按次数给代价打折：「越用越懂你」。存在键盘扩展自己的容器里（一个文本文件，格式见 User.dump）。
+# 选过的字词、整句都记下来，按次数给代价打折：「越用越懂你」（语音结果 11-10 起键盘不再学，learn_text 只留给跑分）。存在键盘扩展自己的容器里（一个文本文件，格式见 User.dump）。
 # w：词（≥2 个字）的次数；b：（上一个词, 词）的次数；p：自造词（分几次选出来的短词组，词典里没有这个键+词）。都留「最近一次的序号」，满了淘汰最久没用的。
 # 打折全是整数（1/2048 纳特），Swift 版 UserModel 逐字照抄。
 U_CAP_W, U_CAP_B, U_CAP_P = 3000, 6000, 1000
@@ -271,6 +271,7 @@ PHRASE_Q = int(12.0 * 2048)      # 自造词的一元权重（ln 权重 × 2048�
 class User:
     def __init__(self):
         self.w, self.b, self.p = {}, {}, {}
+        self.lex = set()        # 服务器词库下发的词（键, 词）：只进词格，不存进学习文件（和 Swift UserModel.lex 一致）
         self.seq = 0
         self._plist = None
 
@@ -301,7 +302,7 @@ class User:
     def plist(self):
         """自造词按（键, 词的 UTF-8）排好的表：词格里它们的虚词条序号 = 词典条数 + 下标"""
         if self._plist is None:
-            self._plist = sorted(self.p, key=lambda x: (x[0], x[1].encode()))
+            self._plist = sorted(set(self.p) | self.lex, key=lambda x: (x[0], x[1].encode()))
             self._pidx = {}
             for i, (k, w) in enumerate(self._plist):
                 self._pidx.setdefault(k, []).append(i)
@@ -311,6 +312,20 @@ class User:
         """键正好是 key 的自造词在 plist 里的下标（升序）"""
         self.plist()
         return self._pidx.get(key, [])
+
+    def count(self, ph):
+        """自己用过几次（词库下发、自己没拼过的是 0）"""
+        v = self.p.get(ph)
+        return v[0] if v else 0
+
+    def set_lex(self, l, drop_old=False):
+        """换上服务器词库的词；drop_old：以前的版本把它们当自造词塞进了学习文件（次数 1），挪过来时顺手清掉（只做一次）"""
+        self.lex = set(l)
+        if drop_old:
+            for x in l:
+                if x in self.p and self.p[x][0] == 1:
+                    del self.p[x]
+        self._plist = None
 
     def bonus(self, prev, w):
         c = self.w.get(w)
@@ -996,14 +1011,18 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
             base = step_cost(lm, ctx_id, lm.id(w), UNI_BASE - q) if lm and ctx_id >= 0 else UNI_BASE - q
             return base - user.bonus(ctx, w) + fpen.get(e, 0)
         full = [e for _, _, e in sorted((ucost(e), k, e) for k, e in enumerate(full))]
-    # 自造词：键正好是整个输入串的，排在最前面（用得多的在前）
-    mine = [] if cuts or not user else [pl[x][1] for x in sorted(user.phrases(b), key=lambda x: (-user.p[pl[x]][0], x))]
+    # 自造词 / 词库词：键正好是整个输入串的（用得多的在前）。照豆包「别处来的词最多排第二」：
+    # 自己拼过两次以上的排最前；只拼过一次的、词库下发的，有常用整词（不冷僻）时排在第一个整词后面，没有才排最前
+    weak = bool(full) and max(D.entry_raw(e)[1] for e in full) < WEAK_Q
+    mine_idx = [] if cuts or not user else sorted(user.phrases(b), key=lambda x: (-user.count(pl[x]), x))
+    firm = lambda x: not full or weak or user.count(pl[x]) >= 2
+    mine = [pl[x][1] for x in mine_idx if firm(x)]
+    mine_late = [pl[x][1] for x in mine_idx if not firm(x)]
     top = max(D.entry(e)[1] for e in full) if full else 0
     s, sfix, sparts = sentence(n)
     # 纠错：输入串不是任何词（也不是任何词的开头、连不成句）= 多半打错了，纠错候选排最前；
     # 是个词但很冷僻（zhidan 制单、haide 害的）= 可能打错，纠错候选插在前两个整词后面；展开面板里总是补在最后
-    typo = not full and not mine and s is None and len(D.prefix(b)) == 0
-    weak = bool(full) and max(D.entry_raw(e)[1] for e in full) < WEAK_Q
+    typo = not full and not mine_idx and s is None and len(D.prefix(b)) == 0
     fz = []
     if not cuts and ((n >= 3 and (typo or weak)) or (expanded and n >= 2)):
         fz = fuzzy(D, b, 30 if expanded else 4)
@@ -1034,8 +1053,11 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
     if syl and pick and not weak:      # 一个音节：第一个是最常用的字，别的字和常用词按代价穿插（wo → 我 我们 我的 … 喔 窝）
         rest = sorted([(acost(e) + fpen.get(e, 0), 0, k, e) for k, e in enumerate(pick[1:])] + [(acost(e) + ASSOC_PEN, 1, k, e) for k, e in enumerate(cand[:ASSOC_MIX])])
         pick = pick[:1] + [x[3] for x in rest]
-    for i in pick[:2] if weak else pick:
+    for k, i in enumerate(pick[:2] if weak else pick):
         push(D.entry(i)[0], n, "全" if len(D.keys[i]) == n else "联")
+        if k == 0:
+            for w in mine_late:
+                push(w, n, "自")
     if weak:
         for w, i, c in fz[:3]:
             push(w, n, "纠", D.keys[i].decode())
