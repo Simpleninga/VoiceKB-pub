@@ -523,18 +523,45 @@ final class PinyinEngine {
         return out
     }
 
-    /// 键盘上方显示的拼音：音节之间空格，末尾还没成音节的字母原样跟着
+    /// 键盘上方显示的拼音：音节之间用 ' 隔开（仿豆包 zhe'juan'dhi'qing），字母一个不改。
+    /// 贪心取最长音节；卡在不成音节的字母上（打错了 / 还没打完），就取最短的一截单独成段，让后面接着切得成音节
     func display(_ raw: String) -> String {
         let s = split(raw)
-        let bs = boundaries(s.letters, s.cuts)
+        let b = s.letters
+        let n = b.count
         var parts: [String] = []
-        var prev = 0
-        for e in bs {
-            parts.append(String(decoding: s.letters[prev..<e], as: UTF8.self))
-            prev = e
+        var i = 0
+        while i < n {
+            let lim = s.cuts.first(where: { $0 > i }) ?? n
+            var j = i + (longestSyllable(b, i, lim) ?? 0)
+            if j == i {
+                j = i + 1
+                while j < lim, !syllablesTo(b, j, lim, open: lim == n) { j += 1 }
+            }
+            parts.append(String(decoding: b[i..<j], as: UTF8.self))
+            i = j
         }
-        if prev < s.letters.count { parts.append(String(decoding: s.letters[prev...], as: UTF8.self)) }
-        return parts.joined(separator: " ")
+        return parts.joined(separator: "'")
+    }
+
+    /// 从 b[i] 起（不越过 lim）最长的音节有几个字母
+    private func longestSyllable(_ b: [UInt8], _ i: Int, _ lim: Int) -> Int? {
+        var l = min(6, lim - i)
+        while l >= 1 {
+            if pinyinSyllables.contains(String(decoding: b[i..<(i + l)], as: UTF8.self)) { return l }
+            l -= 1
+        }
+        return nil
+    }
+
+    /// 音节开头（zh、qi、xia…）：末尾正在打、还没打完的那截算它
+    private static let syllablePrefixes: Set<String> = Set(pinyinSyllables.flatMap { p in (1...p.count).map { String(p.prefix($0)) } })
+
+    /// b[i..<lim] 贪心能不能整个切成音节；open = 这截在整串末尾，最后剩的半个音节也算
+    private func syllablesTo(_ b: [UInt8], _ i: Int, _ lim: Int, open: Bool) -> Bool {
+        var k = i
+        while k < lim, let l = longestSyllable(b, k, lim) { k += l }
+        return k == lim || (open && Self.syllablePrefixes.contains(String(decoding: b[k..<lim], as: UTF8.self)))
     }
 
     // MARK: 词条查询

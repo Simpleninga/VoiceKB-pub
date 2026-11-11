@@ -140,7 +140,21 @@ final class KeyboardSmokeTests: XCTestCase {
         let titles = all(vc.view).compactMap { ($0 as? UIButton)?.currentTitle }
         XCTAssertTrue(titles.contains("我马上就到"), "womahangjiudao 应该纠成「我马上就到」，实际：\(titles.prefix(20))")
         let comp = all(vc.view).compactMap { $0 as? UILabel }.first(where: { $0.accessibilityIdentifier == "comp" && !$0.isHidden })
-        XCTAssertEqual(comp?.text, "wo ma hang jiu dao", "拼音行显示用户打的字母")
+        XCTAssertEqual(comp?.text, "wo'ma'hang'jiu'dao", "拼音行显示用户打的字母")
+    }
+
+    /// 拼音行仿豆包用 ' 分音节（11-11 用户截图 zhe'juan'dhi'qing）：打错的那截单独成段、字母不改；首选是实心块
+    func testPinyinLineApostrophes() {
+        let vc = makeKeyboard()
+        for c in "zhejuandhiqing".map({ String($0) }) { tap(vc, c) }
+        let comp = { self.all(vc.view).compactMap { $0 as? UILabel }.first(where: { $0.accessibilityIdentifier == "comp" && !$0.isHidden })?.text }
+        XCTAssertEqual(comp(), "zhe'juan'dhi'qing")
+        let bs = candButtons(vc).compactMap { $0 as? CandButton }
+        XCTAssertEqual(bs.first?.pill, true, "首选是实心块")
+        XCTAssertEqual(bs.dropFirst().filter { $0.pill }.count, 0, "只有首选是实心块")
+        let e = makeKeyboard()
+        for c in "nih".map({ String($0) }) { tap(e, c) }
+        XCTAssertEqual(self.all(e.view).compactMap { $0 as? UILabel }.first(where: { $0.accessibilityIdentifier == "comp" && !$0.isHidden })?.text, "ni'h", "没打完的音节也隔开")
     }
 
     private func candButtons(_ vc: KeyboardViewController) -> [UIButton] {
@@ -260,7 +274,7 @@ final class KeyboardSmokeTests: XCTestCase {
         let vc = makeKeyboard()
         for c in ["n", "i", "h", "a", "o"] { tap(vc, c) }
         let all = self.all(vc.view)
-        guard let comp = all.compactMap({ $0 as? UILabel }).first(where: { $0.text == "ni hao" && !$0.isHidden }),
+        guard let comp = all.compactMap({ $0 as? UILabel }).first(where: { $0.text == "ni'hao" && !$0.isHidden }),
               let cand = all.compactMap({ $0 as? UIButton }).first(where: { $0.currentTitle == "你好" }) else {
             return XCTFail("找不到拼音行或候选「你好」")
         }
@@ -536,6 +550,9 @@ final class KeyboardSmokeTests: XCTestCase {
         try shot(c, "8-panel")
         try XCTUnwrap(button(c, "filter1")).sendActions(for: .touchUpInside)
         try shot(c, "9-panel-single")
+        let d = makeKeyboard()
+        for l in "zhejuandhiqing" { tap(d, String(l)) }
+        try shot(d, "10-typo-dark", dark: true)
     }
 
     /// 按下字母键冒出放大气泡，松手收起；靠边的键气泡不能伸出键盘
@@ -915,7 +932,7 @@ final class KeyboardSmokeTests: XCTestCase {
         let comp = all(vc.view).compactMap { $0 as? UILabel }.first(where: { $0.accessibilityIdentifier == "comp" && !$0.isHidden })
         XCTAssertNotNil(comp)
         XCTAssertFalse(comp?.text?.contains(where: { $0.isNumber }) ?? true, "九键输入长了顶栏也要是拼音字母，不是数字：\(comp?.text ?? "nil")")
-        XCTAssertEqual(comp?.text, "wo men qu kan dian ying ba", "顶栏是整句的拼音")
+        XCTAssertEqual(comp?.text, "wo'men'qu'kan'dian'ying'ba", "顶栏是整句的拼音")
         let titles = candButtons(vc).compactMap { $0.currentTitle }
         XCTAssertEqual(titles.first, "我们去看电影吧", "第一个候选是整句，实际：\(titles.prefix(12))")
         pickTitle(vc, "我们去看电影吧")

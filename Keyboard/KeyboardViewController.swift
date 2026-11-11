@@ -726,7 +726,42 @@ extension CandidateBar {
 }
 
 
-/// 键盘上方的一条（高 58）：打字时 = 上一行拼音（右边有展开箭头）+ 下一行候选字（可横滑，第一个绿色）；
+/// 候选栏里的一个候选。pill = 按空格会选的那个：实心圆角块 + 白字（仿豆包首选）
+final class CandButton: UIButton {
+    private let pillLayer = CALayer()
+    var pill = false {
+        didSet {
+            guard pill != oldValue else { return }
+            setTitleColor(pill ? .white : .label, for: .normal)
+            setTitleColor(pill ? UIColor(white: 1, alpha: 0.75) : .secondaryLabel, for: .highlighted)
+            paint()
+        }
+    }
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        pillLayer.cornerRadius = 7
+        layer.insertSublayer(pillLayer, at: 0)
+        paint()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) 不用") }
+    override var isHighlighted: Bool { didSet { paint() } }
+    private func paint() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pillLayer.isHidden = !pill
+        pillLayer.backgroundColor = (isHighlighted ? Brand.deep : Brand.green).cgColor
+        CATransaction.commit()
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pillLayer.frame = bounds.insetBy(dx: 3, dy: 1)      // 左右比字多出 8，上下几乎占满候选行
+        CATransaction.commit()
+    }
+}
+
+/// 键盘上方的一条（高 58）：打字时 = 上一行拼音（右边有展开箭头）+ 下一行候选字（可横滑，第一个是绿色实心块）；
 /// 不打字时 = 左边小圆形麦克风按钮、中间语音状态文字 / 声波、右边一个向下的小箭头（点一下收起键盘；刚听写完在它左边多一个「撤销」）。
 /// 打字时麦克风和收起箭头让位，候选能用满整条。
 final class CandidateBar: UIView {
@@ -755,7 +790,7 @@ final class CandidateBar: UIView {
     private var scrollTrailing: NSLayoutConstraint!     // 候选横滑区的右边：右端有展开箭头 / ✕ 那一列时停在它左边，否则到顶栏边
     private let endingDivider = UIView()                // 展开箭头那一列左边的细竖线（豆包同款）
     let mic = KeyButton(type: .custom)
-    private var pool: [UIButton] = []          // 候选按钮：建一次反复用，打每个字母都重建几十个按钮会卡
+    private var pool: [CandButton] = []          // 候选按钮：建一次反复用，打每个字母都重建几十个按钮会卡
     var onPick: ((Int) -> Void)?
     var onUndo: (() -> Void)?
     var onMic: (() -> Void)?
@@ -1002,7 +1037,7 @@ final class CandidateBar: UIView {
         shownFirst = first
         compLabel.text = comp
         while pool.count < items.count {
-            let b = UIButton(type: .custom)
+            let b = CandButton(frame: .zero)      // init(frame:) 就是 .custom 类型
             b.titleLabel?.font = .systemFont(ofSize: 21)
             b.setTitleColor(.label, for: .normal)
             b.setTitleColor(.secondaryLabel, for: .highlighted)
@@ -1015,7 +1050,7 @@ final class CandidateBar: UIView {
         }
         for (i, b) in pool.enumerated() {
             b.setTitle(i < items.count ? items[i] : nil, for: .normal)
-            b.setTitleColor(first && i == 0 ? Brand.green : .label, for: .normal)     // 第一个（按空格会选的）用绿色
+            b.pill = first && i == 0 && i < items.count     // 第一个（按空格会选的）：绿色实心块 + 白字
             b.isHidden = i >= items.count
         }
         if keepPlace {
@@ -2805,7 +2840,8 @@ final class KeyboardViewController: UIInputViewController {
     func refreshBar() {
         if composing {
             // 拼音行只显示用户打的字母（纠错只在后台改候选，不改、不标记用户打的字）
-            let comp = chinese ? (nineSyll != nil ? nineComp() : (engine?.display(buffer) ?? buffer)) : buffer
+            // 自己打的分词符在末尾时也显示出来（中间的本来就显示成 '）
+            let comp = chinese ? (nineSyll != nil ? nineComp() : (engine.map { $0.display(buffer) + (buffer.hasSuffix("'") ? "'" : "") } ?? buffer)) : buffer
             candBar.showCandidates(comp: picked.map { $0.cand.text }.joined() + comp, items: cands.map { $0.text })
         } else if recordingNow {
             candBar.showWave()
