@@ -2870,6 +2870,7 @@ final class KeyboardViewController: UIInputViewController {
         let c = panelList[i]
         closePanel()
         typed()
+        logRank(c, rank: (cands.firstIndex { $0.text == c.text && $0.consume == c.consume } ?? -1) + 1)
         commitCandidate(c)
     }
 
@@ -3198,7 +3199,17 @@ final class KeyboardViewController: UIInputViewController {
         guard i < cands.count else { return }
         keyFeedback()
         typed()
+        logRank(cands[i], rank: i + 1)
         commitCandidate(cands[i])
+    }
+
+    /// 排序诊断（11-11 用户：打对的词排很后面，服务器看不到键盘选了啥）：选了不在第一位的候选就记一行——
+    /// 拼音、选的词、排第几（0 = 不在顶栏，是展开面板里选的）、顶栏前三个和它们的类型、有没有上文。不记上文内容。
+    /// 经 qlog 补报到服务器：`journalctl -u voicekb-server | grep 选词排`
+    private func logRank(_ c: PinyinCandidate, rank: Int) {
+        guard chinese, rank != 1 else { return }
+        let head = cands.prefix(3).map { "\($0.text)[\($0.kind.rawValue)]" }.joined(separator: " ")
+        qlog("选词排\(rank > 0 ? "第\(rank)" : "展开面板")：\(buffer)→\(c.text)[\(c.kind.rawValue)]；前面：\(head)；上文\(ctxTail.isEmpty ? "无" : "有")\(nine ? "；九键" : "")")
     }
 
     /// 中文：把候选打进去、剩下的拼音接着出候选；英文：把词连同一个空格打进去
