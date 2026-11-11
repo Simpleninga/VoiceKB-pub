@@ -891,8 +891,9 @@ final class KeyboardSmokeTests: XCTestCase {
         for c in ["n", "i", "h", "a", "o"] { tap(vc, c) }
         XCTAssertTrue(mic.isHidden, "打字时麦克风让位")
         let cands = all(vc.view).compactMap { $0 as? UIButton }.filter { !$0.isHidden && $0.currentTitle != nil && $0.tag < 40 && $0.superview is UIStackView && !($0 is KeyButton) }
-        XCTAssertEqual(cands.first?.titleColor(for: .normal), Brand.green, "第一个候选用绿色")
-        XCTAssertNotEqual(cands.dropFirst().first?.titleColor(for: .normal), Brand.green)
+        XCTAssertEqual((cands.first as? CandButton)?.pill, true, "第一个候选是绿色实心块")
+        XCTAssertEqual(cands.first?.titleColor(for: .normal), .white, "实心块上是白字")
+        XCTAssertEqual((cands.dropFirst().first as? CandButton)?.pill, false)
         for _ in 0..<5 {
             button(vc, "delete")?.sendActions(for: .touchDown)
             button(vc, "delete")?.sendActions(for: .touchUpInside)
