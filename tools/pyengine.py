@@ -14,6 +14,7 @@ class Dict:
         assert magic == b"PYD1"
         self.d, self.n, self.koff, self.woff, self.toff = d, n, koff, woff, toff
         self.m, self.ioff, self.ikoff = m, ioff, ikoff
+        self.cq = None
         self.keys = []
         for i in range(n):
             ko, wo, kl, wl, q = struct.unpack_from("<IIBBH", d, toff + i * 12)
@@ -31,6 +32,22 @@ class Dict:
         """（词, 权重整数 q）——q = round(ln(权重+1) * 2048)，整数运算用"""
         ko, wo, kl, wl, q = struct.unpack_from("<IIBBH", self.d, self.toff + i * 12)
         return self.d[self.woff + wo: self.woff + wo + wl].decode("utf8"), q
+
+    def read_pen(self, e):
+        """读音罚分（2026-11-11）：单字用的是不常用的读音（会 kuai、都 du、还 huan）时，比它最常用的读音少多少权重。
+        二元语法只认字不认读音（「就」后面接「会」很常见，可打的是 kuai），接在上文后面时要把读音的代价补上；
+        一元代价本来就按读音分过（blend.py），不用补。每个字最常用读音的权重 = 键正好是一个音节的词条里取最大，第一次用时扫一遍"""
+        w, q = self.entry_raw(e)
+        if len(w) != 1:
+            return 0
+        if self.cq is None:
+            self.cq = {}
+            for s in sorted(SYL):
+                for i in self.exact(s.encode()):
+                    c, qi = self.entry_raw(i)
+                    if len(c) == 1 and qi > self.cq.get(c, -1):
+                        self.cq[c] = qi
+        return max(0, self.cq.get(w, q) - q)
 
     def exact(self, key):
         lo = bisect.bisect_left(self.keys, key)
@@ -229,21 +246,21 @@ def prefix_words(D, b, j, k, cap):
     return out
 
 
-def step_cost(lm, last, lid, uni):
-    """上一个词 last（LM 的词 id，-1 = 没有上文）后面接词 lid 的代价；uni = 它的一元代价"""
+def step_cost(lm, last, lid, uni, rp=0):
+    """上一个词 last（LM 的词 id，-1 = 没有上文）后面接词 lid 的代价；uni = 它的一元代价；rp = 读音罚分（Dict.read_pen，只加在二元语法上）"""
     if lm is None or last < 0:
         return uni
     if lid >= 0:
         c = lm.pair(last, lid)
         if c is not None:
-            return c
+            return c + rp
     return uni + lm.back[last]      # 没见过的词对（含不在模型里的词）：一元代价 + 回退代价，不能让「模型里没有的词」白占便宜
 
 
-def step_cost3(lm, p2, last, lid, uni):
+def step_cost3(lm, p2, last, lid, uni, rp=0):
     """三元：前前词 p2、上一个词 last 后面接词 lid 的代价。见过的三元 = 它自己的代价；上下文 (p2, last) 见过、这个词没见过 = 二元代价 + 三元回退代价；
     上下文也没见过（或没有三元）= 二元代价。p2 < 0 = 没有前前词"""
-    base = step_cost(lm, last, lid, uni)
+    base = step_cost(lm, last, lid, uni, rp)
     if lm is None or not lm.has_tri or p2 < 0 or last < 0:
         return base
     ci = lm.tri_ctx(p2, last)
@@ -252,7 +269,7 @@ def step_cost3(lm, p2, last, lid, uni):
     if lid >= 0:
         c3 = lm.tri_cost(ci, lid)
         if c3 is not None:
-            return c3
+            return c3 + rp
     return base + lm.tb[ci]
 
 
@@ -609,8 +626,9 @@ def run_dp(D, b, cuts, lm, ctx, user=None, ctxw=None, t9=False, abbr=False):
             uni = UNI_BASE - q
             lid = lm.id(w) if lm else -1
             key = lid if lid >= 0 else -(e + 1)
+            rp = D.read_pen(e) if e < D.n else 0
             for c, last, path, f, p2 in beams[i]:
-                st = step_cost3(lm, p2, last, lid, uni)
+                st = step_cost3(lm, p2, last, lid, uni, rp)
                 if user:
                     st = max(0, st - user.bonus(ent(path[-1][0])[0] if path else ctxw, w))
                 beams[j].append((c + st + pen, key, path + ((e, j - i),), f | fix, last))
@@ -684,6 +702,7 @@ NEAR = {
 F_NEAR, F_FAR, F_TRANS, F_INDEL, F_INDEL_SOFT = 2, 4, 2, 3, 2
 F_LAMBDA = 2048                  # 每个代价单位折合的词频（1/2048 纳特）：1 纳特，也就是差 2.7 倍词频
 WEAK_Q = int(9.5 * 2048)         # 整词里最常用的那个权重低于这个，就算「可能打错了」，把纠错候选排到前面
+LEAD_MARGIN = int(1.0 * 2048)    # 整句（没改过拼音）比整词便宜这么多以上，才排到这个整词前面：同样便宜时还是整词优先
 
 
 def f_budget(n):
@@ -1003,23 +1022,38 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
     if lm and ctx_id >= 0 and len(full) > 1:      # 有上文：整词按「接在上文后面」的代价重排（代价相同保持原顺序）
         def cx(e):
             w, q = D.entry_raw(e)
-            return step_cost(lm, ctx_id, lm.id(w), UNI_BASE - q) + fpen.get(e, 0)
+            return step_cost(lm, ctx_id, lm.id(w), UNI_BASE - q, D.read_pen(e)) + fpen.get(e, 0)
         full = [e for _, _, e in sorted((cx(e), k, e) for k, e in enumerate(full))]
     if user and full and any(user.bonus(ctx, D.entry(e)[0]) for e in full):     # 用过的词往前挪（打折后的代价相同保持原顺序）
         def ucost(e):
             w, q = D.entry_raw(e)
-            base = step_cost(lm, ctx_id, lm.id(w), UNI_BASE - q) if lm and ctx_id >= 0 else UNI_BASE - q
+            base = step_cost(lm, ctx_id, lm.id(w), UNI_BASE - q, D.read_pen(e)) if lm and ctx_id >= 0 else UNI_BASE - q
             return base - user.bonus(ctx, w) + fpen.get(e, 0)
         full = [e for _, _, e in sorted((ucost(e), k, e) for k, e in enumerate(full))]
+    top = max(D.entry(e)[1] for e in full) if full else 0
+    pick = [i for k, i in enumerate(full[:8]) if k < 3 or D.entry(i)[1] >= top - 4.5]
+    s, sfix, sparts = sentence(n)
+    syl = not cuts and letters in SYL and (n >= 2 or letters in "aoe")
+    # 整句和整词按词格里的代价比（2026-11-11）：词典没收「对的」「是的」，整串成词的只有 㨃得 / 使得，以前整句一律排在整词后面。
+    # 没改过拼音的整句比某个（字不一样的）整词便宜 LEAD_MARGIN 以上，就排到它前面（sat = 排在第几个整词前面，None = 照旧排在整词后面）
+    sat = None
+    if s and not sfix and not syl:
+        def wcost(e):      # 整词单独成一条路的代价（算法和词格里一样）
+            w, q = D.entry_raw(e)
+            c = step_cost(lm, ctx_id, lm.id(w) if lm else -1, UNI_BASE - q, D.read_pen(e))
+            if user:
+                c = max(0, c - user.bonus(ctx, w))
+            return c + fpen.get(e, 0)
+        lim = beams[n][0][0] + LEAD_MARGIN
+        sat = next((k for k, e in enumerate(pick) if D.entry(e)[0] != s and wcost(e) > lim), None)
     # 自造词 / 词库词：键正好是整个输入串的（用得多的在前）。照豆包「别处来的词最多排第二」：
-    # 自己拼过两次以上的排最前；只拼过一次的、词库下发的，有常用整词（不冷僻）时排在第一个整词后面，没有才排最前
-    weak = bool(full) and max(D.entry_raw(e)[1] for e in full) < WEAK_Q
+    # 自己拼过两次以上的排最前；只拼过一次的、词库下发的，有常用整词（不冷僻）时排在第一个整词后面，没有才排最前。
+    # 整句排第一（duide → 对的）就不算「可能打错了」
+    weak = bool(full) and max(D.entry_raw(e)[1] for e in full) < WEAK_Q and sat != 0
     mine_idx = [] if cuts or not user else sorted(user.phrases(b), key=lambda x: (-user.count(pl[x]), x))
     firm = lambda x: not full or weak or user.count(pl[x]) >= 2
     mine = [pl[x][1] for x in mine_idx if firm(x)]
     mine_late = [pl[x][1] for x in mine_idx if not firm(x)]
-    top = max(D.entry(e)[1] for e in full) if full else 0
-    s, sfix, sparts = sentence(n)
     # 纠错：输入串不是任何词（也不是任何词的开头、连不成句）= 多半打错了，纠错候选排最前；
     # 是个词但很冷僻（zhidan 制单、haide 害的）= 可能打错，纠错候选插在前两个整词后面；展开面板里总是补在最后
     typo = not full and not mine_idx and s is None and len(D.prefix(b)) == 0
@@ -1031,14 +1065,12 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
             push(w, n, "纠", D.keys[i].decode())
     for w in mine:
         push(w, n, "自")
-    pick = [i for k, i in enumerate(full[:8]) if k < 3 or D.entry(i)[1] >= top - 4.5]
     # 联想：键以输入开头的更长的词，按「接在上文后面」的代价排（用过的词往前挪）。
     # 打全了一个音节（xi）就只要第一个音节正是它的词（喜欢、希望），xian / xiao 开头的是还没打完，不凑数
     def acost(e):
         w, q = D.entry_raw(e)
-        base = step_cost(lm, ctx_id, lm.id(w), UNI_BASE - q) if lm and ctx_id >= 0 else UNI_BASE - q
+        base = step_cost(lm, ctx_id, lm.id(w), UNI_BASE - q, D.read_pen(e)) if lm and ctx_id >= 0 else UNI_BASE - q
         return base - user.bonus(ctx, w) if user else base
-    syl = not cuts and letters in SYL and (n >= 2 or letters in "aoe")
     if cuts:
         cand = []
     elif syl:
@@ -1054,6 +1086,8 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
         rest = sorted([(acost(e) + fpen.get(e, 0), 0, k, e) for k, e in enumerate(pick[1:])] + [(acost(e) + ASSOC_PEN, 1, k, e) for k, e in enumerate(cand[:ASSOC_MIX])])
         pick = pick[:1] + [x[3] for x in rest]
     for k, i in enumerate(pick[:2] if weak else pick):
+        if k == sat:
+            push(s, n, "句", sfix, sparts)
         push(D.entry(i)[0], n, "全" if len(D.keys[i]) == n else "联")
         if k == 0:
             for w in mine_late:
@@ -1061,7 +1095,9 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
     if weak:
         for w, i, c in fz[:3]:
             push(w, n, "纠", D.keys[i].decode())
-        for i in pick[2:]:
+        for k, i in enumerate(pick[2:], 2):
+            if k == sat:
+                push(s, n, "句", sfix, sparts)
             push(D.entry(i)[0], n, "全")
     if s:
         push(s, n, "句", sfix, sparts)

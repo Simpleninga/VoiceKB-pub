@@ -185,6 +185,7 @@ final class PinyinEngine {
     static let typoMin = 2, typoMax = 14
     // 另一路整句比最好的贵不超过这么多，才当第二个候选给出来：最好的改过 → 原样那句宽一点（退路）；最好的没改 → 纠正句要很接近才给
     static let altRawMargin = Int(8.0 * 2048), altFixMargin = Int(3.0 * 2048)
+    static let leadMargin = Int(1.0 * 2048)    // 整句（没改过拼音）比整词便宜这么多以上，才排到这个整词前面：同样便宜时还是整词优先
     static let assocPen = 1024, assocMix = 6, assocHead = 3   // 一个音节时：联想词比同音字多罚多少（1/2048 纳特）、穿插几个；联想先给几个
     static let noPredict = ["妈的", "他妈", "你妈", "尼玛", "傻逼", "我操", "卧槽"]      // 口语语料里常见，但不主动推荐（打全拼音照样能出来）
 
@@ -207,10 +208,39 @@ final class PinyinEngine {
         return v
     }
 
-    /// 上一个词 last（语言模型的词 id，-1 = 没有上文）后面接词 lid 的代价；uni = 它的一元代价
-    private func stepCost(_ last: Int, _ lid: Int, _ uni: Int) -> Int {
+    /// 每个单字最常用读音的权重：键正好是一个音节的词条里取最大（读音罚分用，第一次用时扫一遍）
+    private lazy var charQ: [UInt32: Int] = {
+        var m: [UInt32: Int] = [:]
+        for s in pinyinSyllables {
+            let k = Array(s.utf8)
+            for i in k.withUnsafeBufferPointer({ self.dict.exact($0.baseAddress!, k.count) }) {
+                let sc = self.dict.word(i).unicodeScalars
+                guard sc.count == 1, let c = sc.first?.value else { continue }
+                m[c] = max(m[c] ?? -1, self.dict.rawWeight(i))
+            }
+        }
+        return m
+    }()
+    private var readPens: [Int: Int] = [:]
+
+    /// 读音罚分（2026-11-11，说明见 Python 版 Dict.read_pen）：单字用的是不常用的读音（会 kuai、都 du、还 huan）时，比它最常用的读音少多少权重。
+    /// 二元语法只认字不认读音，接在上文后面时要补上；一元代价本来就按读音分过，不用补
+    private func readPen(_ e: Int) -> Int {
+        if let v = readPens[e] { return v }
+        let sc = dict.word(e).unicodeScalars
+        var v = 0
+        if sc.count == 1, let c = sc.first?.value {
+            let q = dict.rawWeight(e)
+            v = max(0, (charQ[c] ?? q) - q)
+        }
+        readPens[e] = v
+        return v
+    }
+
+    /// 上一个词 last（语言模型的词 id，-1 = 没有上文）后面接词 lid 的代价；uni = 它的一元代价；rp = 读音罚分（readPen，只加在二元语法上）
+    private func stepCost(_ last: Int, _ lid: Int, _ uni: Int, _ rp: Int = 0) -> Int {
         guard let lm, last >= 0 else { return uni }
-        if lid >= 0, let c = lm.pair(last, lid) { return c }
+        if lid >= 0, let c = lm.pair(last, lid) { return c + rp }
         return uni + lm.backoff(last)      // 没见过的词对（含不在模型里的词）：一元代价 + 回退代价
     }
 
@@ -784,8 +814,9 @@ final class PinyinEngine {
                     let uni = Self.uniBase - dict.rawWeight(e)
                     let lid = lmID(e)
                     let key = lid >= 0 ? lid : -(e + 1)
+                    let rp = readPen(e)
                     for st in beams[i] {
-                        beams[j].append(State(cost: st.cost + stepCost(st.last, lid, uni), last: key, path: st.path + [e, j - i], fix: false))
+                        beams[j].append(State(cost: st.cost + stepCost(st.last, lid, uni, rp), last: key, path: st.path + [e, j - i], fix: false))
                     }
                 }
             }
@@ -897,8 +928,9 @@ final class PinyinEngine {
                 let lid = e < nd ? lmID(e) : (lm?.id(of: pl[e - nd].word) ?? -1)
                 let key = lid >= 0 ? lid : -(e + 1)
                 let w = u == nil ? "" : wordOf(e)
+                let rp = e < nd ? readPen(e) : 0
                 for st in beams[i] {
-                    var step = stepCost(st.last, lid, uni)
+                    var step = stepCost(st.last, lid, uni, rp)
                     if let u { step = max(0, step - u.bonus(st.path.isEmpty ? ctxw : wordOf(st.path[st.path.count - 2]), w)) }
                     beams[j].append(State(cost: st.cost + step + pen, last: key, path: st.path + [e, j - i], fix: st.fix || pen > 0))
                 }
@@ -981,19 +1013,36 @@ final class PinyinEngine {
             }
         }
         if lm != nil, ctxID >= 0, full.count > 1 {      // 有上文：整词按「接在上文后面」的代价重排（代价相同保持原顺序）
-            full = full.enumerated().map { (k, e) in (stepCost(ctxID, lmID(e), Self.uniBase - dict.rawWeight(e)) + (fpen[e] ?? 0), k, e) }
+            full = full.enumerated().map { (k, e) in (stepCost(ctxID, lmID(e), Self.uniBase - dict.rawWeight(e), readPen(e)) + (fpen[e] ?? 0), k, e) }
                 .sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }.map { $0.2 }
         }
         if let u, !full.isEmpty, full.contains(where: { u.bonus(ctxw, dict.word($0)) > 0 }) {     // 用过的词往前挪（打折后代价相同保持原顺序）
             full = full.enumerated().map { (k, e) -> (Int, Int, Int) in
                 let uni = Self.uniBase - dict.rawWeight(e)
-                let base = lm != nil && ctxID >= 0 ? stepCost(ctxID, lmID(e), uni) : uni
+                let base = lm != nil && ctxID >= 0 ? stepCost(ctxID, lmID(e), uni, readPen(e)) : uni
                 return (base - u.bonus(ctxw, dict.word(e)) + (fpen[e] ?? 0), k, e)
             }.sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }.map { $0.2 }
         }
+        let top = full.isEmpty ? 0 : full.map { dict.logWeight($0) }.max()!
+        var pick = full.prefix(8).enumerated().filter { $0.offset < 3 || dict.logWeight($0.element) >= top - 4.5 }.map { $0.element }
+        let whole = sentence(n)
+        let syl = s.cuts.isEmpty && pinyinSyllables.contains(String(decoding: b, as: UTF8.self)) && (n >= 2 || b[0] == 97 || b[0] == 111 || b[0] == 101)      // 单个字母里只有 a o e 自己是音节
+        // 整句和整词按词格里的代价比（2026-11-11）：词典没收「对的」「是的」，整串成词的只有 㨃得 / 使得，以前整句一律排在整词后面。
+        // 没改过拼音的整句比某个（字不一样的）整词便宜 leadMargin 以上，就排到它前面（sat = 排在第几个整词前面，nil = 照旧排在整词后面）
+        var sat: Int? = nil
+        if let t = whole, t.fix.isEmpty, !syl, let best = beams[n].first {
+            func wcost(_ e: Int) -> Int {      // 整词单独成一条路的代价（算法和词格里一样）
+                var c = stepCost(ctxID, lmID(e), Self.uniBase - dict.rawWeight(e), readPen(e))
+                if let u { c = max(0, c - u.bonus(ctxw, dict.word(e))) }
+                return c + (fpen[e] ?? 0)
+            }
+            let lim = best.cost + Self.leadMargin
+            sat = pick.firstIndex { dict.word($0) != t.text && wcost($0) > lim }
+        }
         // 自造词 / 词库词：键正好是整个输入串的（用得多的在前）。照豆包「别处来的词最多排第二」：
-        // 自己拼过两次以上的排最前；只拼过一次的、词库下发的，有常用整词（不冷僻）时排在第一个整词后面，没有才排最前
-        let weak = !full.isEmpty && full.map { dict.rawWeight($0) }.max()! < Self.weakQ
+        // 自己拼过两次以上的排最前；只拼过一次的、词库下发的，有常用整词（不冷僻）时排在第一个整词后面，没有才排最前。
+        // 整句排第一（duide → 对的）就不算「可能打错了」
+        let weak = !full.isEmpty && full.map { dict.rawWeight($0) }.max()! < Self.weakQ && sat != 0
         let mineIdx: [Int] = (u == nil || !s.cuts.isEmpty) ? [] : u!.phrases(b).sorted {
             let a = u!.count(of: pl[$0]), c = u!.count(of: pl[$1])
             return a != c ? a > c : $0 < $1
@@ -1001,8 +1050,6 @@ final class PinyinEngine {
         let firm = { (i: Int) -> Bool in full.isEmpty || weak || u!.count(of: pl[i]) >= 2 }
         let mine = mineIdx.filter(firm).map { pl[$0].word }
         let mineLate = mineIdx.filter { !firm($0) }.map { pl[$0].word }
-        let top = full.isEmpty ? 0 : full.map { dict.logWeight($0) }.max()!
-        let whole = sentence(n)
         // 纠错：输入串不是任何词（也不是任何词的开头、连不成句）= 多半打错了，纠错候选排最前；
         // 是个词但很冷僻（zhidan 制单、haide 害的）= 可能打错，纠错候选插在前两个整词后面；展开面板里总是补在最后
         let typo = full.isEmpty && mineIdx.isEmpty && whole == nil && b.withUnsafeBufferPointer({ dict.prefix($0.baseAddress!, n) }).isEmpty
@@ -1012,12 +1059,11 @@ final class PinyinEngine {
         }
         if typo { for (i, _) in fz.prefix(4) { push(dict.word(i), n, .fuzzy, fixKey(i)) } }
         for w in mine { push(w, n, .user) }
-        var pick = full.prefix(8).enumerated().filter { $0.offset < 3 || dict.logWeight($0.element) >= top - 4.5 }.map { $0.element }
         // 联想：键以输入开头的更长的词，按「接在上文后面」的代价排（用过的词往前挪）。
         // 打全了一个音节（xi）就只要第一个音节正是它的词（喜欢、希望），xian / xiao 开头的是还没打完，不凑数
         func acost(_ e: Int) -> Int {
             let uni = Self.uniBase - dict.rawWeight(e)
-            let base = lm != nil && ctxID >= 0 ? stepCost(ctxID, lmID(e), uni) : uni
+            let base = lm != nil && ctxID >= 0 ? stepCost(ctxID, lmID(e), uni, readPen(e)) : uni
             if let u { return base - u.bonus(ctxw, dict.word(e)) }
             return base
         }
@@ -1034,7 +1080,6 @@ final class PinyinEngine {
             }
             return top.map { $0.1 }
         }
-        let syl = s.cuts.isEmpty && pinyinSyllables.contains(String(decoding: b, as: UTF8.self)) && (n >= 2 || b[0] == 97 || b[0] == 111 || b[0] == 101)      // 单个字母里只有 a o e 自己是音节
         var assoc: [Int] = !s.cuts.isEmpty ? [] : (syl ? prefixWords(b, n, 1, 40) : assocTop(40))
         if (lm != nil && ctxID >= 0) || u != nil {
             assoc = assoc.enumerated().map { (acost($0.element), $0.offset, $0.element) }
@@ -1051,12 +1096,16 @@ final class PinyinEngine {
             pick = [pick[0]] + rest.map { $0.3 }
         }
         for (k, i) in (weak ? Array(pick.prefix(2)) : pick).enumerated() {
+            if k == sat, let t = whole { push(t.text, n, .sentence, t.fix, t.parts) }
             push(dict.word(i), n, dict.keyLength(i) == n ? .full : .assoc)
             if k == 0 { for w in mineLate { push(w, n, .user) } }
         }
         if weak {
             for (i, _) in fz.prefix(3) { push(dict.word(i), n, .fuzzy, fixKey(i)) }
-            for i in pick.dropFirst(2) { push(dict.word(i), n, .full) }
+            for (k, i) in pick.enumerated().dropFirst(2) {
+                if k == sat, let t = whole { push(t.text, n, .sentence, t.fix, t.parts) }
+                push(dict.word(i), n, .full)
+            }
         }
         // 2. 整句；另一路（改过拼音 ↔ 没改过）的最好整句紧跟在后面：纠错改错了点它就回到原样，没敢改的点它就是纠正后的
         if let t = whole {
