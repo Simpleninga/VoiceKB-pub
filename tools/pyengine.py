@@ -138,11 +138,13 @@ class LM:
 
 
 SYL = set()
+SYL_PREFIX = set()     # 音节开头（zh、qi、xia…）：末尾正在打、还没打完的那截
 
 
 def load_syllables(path):
-    global SYL
+    global SYL, SYL_PREFIX
     SYL = set(open(path).read().split())
+    SYL_PREFIX = {p[:k] for p in SYL for k in range(1, len(p) + 1)}
 
 
 def split_raw(raw):
@@ -199,17 +201,44 @@ def boundaries(b, cuts):
     return out
 
 
+def longest_syllable(b, i, lim):
+    """从 b[i] 起（不越过 lim）最长的音节有几个字母，没有返回 0"""
+    for l in range(min(6, lim - i), 0, -1):
+        if b[i:i + l].decode() in SYL:
+            return l
+    return 0
+
+
+def syllables_to(b, i, lim, open_):
+    """b[i:lim] 贪心能不能整个切成音节；open_ = 这截在整串末尾，最后剩的半个音节也算"""
+    k = i
+    while k < lim:
+        l = longest_syllable(b, k, lim)
+        if not l:
+            break
+        k += l
+    return k == lim or (open_ and b[k:lim].decode() in SYL_PREFIX)
+
+
 def display(raw):
+    """键盘上方显示的拼音：音节之间用 ' 隔开（仿豆包 zhe'juan'dhi'qing），字母一个不改。和 Swift display 逐字一致"""
     letters, cuts, _ = split_raw(raw)
     b = letters.encode()
-    bs = boundaries(b, cuts)
-    parts, prev = [], 0
-    for e in bs:
-        parts.append(letters[prev:e])
-        prev = e
-    if prev < len(letters):
-        parts.append(letters[prev:])
-    return " ".join(parts)
+    n = len(b)
+    parts, i = [], 0
+    while i < n:
+        lim = min([c for c in cuts if c > i] + [n])
+        j = i + longest_syllable(b, i, lim)
+        if j == i:
+            if lim == n and b[i:lim].decode() in SYL_PREFIX:     # 末尾正在打的半个音节（zh、xia）整个算一段
+                j = lim
+            else:                                                   # 打错的字母：取最短的一截，让后面接着切得成音节
+                j = i + 1
+                while j < lim and not syllables_to(b, j, lim, lim == n):
+                    j += 1
+        parts.append(letters[i:j])
+        i = j
+    return "'".join(parts)
 
 
 def inner_cuts(cuts, i, j):

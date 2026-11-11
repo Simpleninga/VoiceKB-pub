@@ -535,8 +535,12 @@ final class PinyinEngine {
             let lim = s.cuts.first(where: { $0 > i }) ?? n
             var j = i + (longestSyllable(b, i, lim) ?? 0)
             if j == i {
-                j = i + 1
-                while j < lim, !syllablesTo(b, j, lim, open: lim == n) { j += 1 }
+                if lim == n, Self.syllablePrefixes.contains(String(decoding: b[i..<lim], as: UTF8.self)) {
+                    j = lim         // 末尾正在打的半个音节（zh、xia）整个算一段
+                } else {            // 打错的字母：取最短的一截，让后面接着切得成音节
+                    j = i + 1
+                    while j < lim, !syllablesTo(b, j, lim, open: lim == n) { j += 1 }
+                }
             }
             parts.append(String(decoding: b[i..<j], as: UTF8.self))
             i = j
