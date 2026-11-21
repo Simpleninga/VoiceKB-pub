@@ -177,8 +177,8 @@ final class PinyinEngine {
     static let maxKey = 60
 
     static let uniBase = Int(lnTotal * 2048)     // 一元代价（整数，单位 1/2048 纳特）= uniBase - q
-    static let beam = 4          // 整句动态规划：每个位置留几条「最后一个词不同」的最优路径
-    static let perKey = 4        // 每段拼音最多试几个候选词
+    static let beam = 10         // 整句动态规划：每个位置留几条「最后一个词不同」的最优路径
+    static let perKey = 8        // 每段拼音最多试几个候选词
 
     // 整句纠错：词格里给每段拼音加「改一处就成词」的边（和 Python 版 typo_edges 一致，说明见那边）。罚分按错法分（1/2048 纳特）
     static let penSub = Int(7.0 * 2048), penTrans = Int(6.0 * 2048), penExtra = Int(10.0 * 2048), penMiss = Int(6.0 * 2048), penGH = Int(6.0 * 2048)
@@ -628,7 +628,7 @@ final class PinyinEngine {
 
     static let fNear = 2, fFar = 4, fTrans = 2, fIndel = 3, fIndelSoft = 2
     static let fLambda = 2048           // 每个代价单位折合的词频（1/2048 纳特）
-    static let weakQ = Int(9.5 * 2048)  // 整词里最常用的那个权重低于这个，就算「可能打错了」
+    static let weakQ = Int(5.0 * 2048)  // 整词里最常用的那个权重低于这个，就算「可能打错了」
 
     /// 邻键 = 手机键盘上挨着的键（半键错位）+ 常见模糊音（l/n、f/h、r/l）
     private static let nearTable: [Bool] = {
@@ -1158,7 +1158,7 @@ final class PinyinEngine {
         }
         for i in assoc.dropFirst(Self.assocHead).prefix(3) { push(dict.word(i), n, .assoc) }
         // 5. 简拼
-        if n >= 2, n <= 6, s.cuts.isEmpty {
+        if n >= 2, n <= 6, s.cuts.isEmpty, !(syl && n <= 2) {
             for idx in b.withUnsafeBufferPointer({ dict.initials($0.baseAddress!, n, limit: 10) }) { push(dict.word(idx), n, .initials) }
         }
         // 6. 什么都没有：把字母原样给出

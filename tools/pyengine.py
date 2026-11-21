@@ -76,8 +76,8 @@ def cost(q):
 
 
 UNI_BASE = int(LN_TOTAL * 2048)     # 一元代价（整数，单位 1/2048 纳特）= UNI_BASE - q
-BEAM = 4          # 整句动态规划：每个位置留几个「最后一个词不同」的最优路径
-PER_KEY = 4       # 每段拼音最多试几个候选词
+BEAM = 10         # 整句动态规划：每个位置留几个「最后一个词不同」的最优路径
+PER_KEY = 8       # 每段拼音最多试几个候选词
 
 
 class LM:
@@ -730,7 +730,7 @@ NEAR = {
 }
 F_NEAR, F_FAR, F_TRANS, F_INDEL, F_INDEL_SOFT = 2, 4, 2, 3, 2
 F_LAMBDA = 2048                  # 每个代价单位折合的词频（1/2048 纳特）：1 纳特，也就是差 2.7 倍词频
-WEAK_Q = int(9.5 * 2048)         # 整词里最常用的那个权重低于这个，就算「可能打错了」，把纠错候选排到前面
+WEAK_Q = int(5.0 * 2048)         # 整词里最常用的那个权重低于这个，就算「可能打错了」，把纠错候选排到前面
 LEAD_MARGIN = int(1.0 * 2048)    # 整句（没改过拼音）比整词便宜这么多以上，才排到这个整词前面：同样便宜时还是整词优先
 
 
@@ -1153,7 +1153,7 @@ def candidates(D, raw, limit=40, expanded=False, lm=None, ctx=None, user=None):
             push(D.entry(i)[0], j, "前")
     for i in cand[ASSOC_HEAD:ASSOC_HEAD + 3]:
         push(D.entry(i)[0], n, "联")
-    if 2 <= n <= 6 and not cuts:
+    if 2 <= n <= 6 and not cuts and not (syl and n <= 2):
         for idx in D.initials(b)[:10]:
             push(D.entry(idx)[0], n, "简")
     if not out:

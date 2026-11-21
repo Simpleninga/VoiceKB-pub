@@ -52,3 +52,805 @@
 企业微信	qi ye wei xin	6000
 唤醒词	huan xing ci	4000
 语音键盘	yu yin jian pan	4000
+
+# 常见百家姓 + 职务/称谓（政企、医疗、商务、教育场景常用）
+肖主任	xiao zhu ren	15000
+肖医生	xiao yi sheng	15000
+肖老师	xiao lao shi	15000
+肖总	xiao zong	12000
+肖科长	xiao ke zhang	10000
+肖院长	xiao yuan zhang	10000
+肖经理	xiao jing li	10000
+肖书记	xiao shu ji	10000
+张主任	zhang zhu ren	15000
+张医生	zhang yi sheng	15000
+张老师	zhang lao shi	15000
+张总	zhang zong	12000
+张科长	zhang ke zhang	10000
+张院长	zhang yuan zhang	10000
+张经理	zhang jing li	10000
+张书记	zhang shu ji	10000
+李主任	li zhu ren	15000
+李医生	li yi sheng	15000
+李老师	li lao shi	15000
+李总	li zong	12000
+李科长	li ke zhang	10000
+李院长	li yuan zhang	10000
+李经理	li jing li	10000
+李书记	li shu ji	10000
+王主任	wang zhu ren	15000
+王医生	wang yi sheng	15000
+王老师	wang lao shi	15000
+王总	wang zong	12000
+王科长	wang ke zhang	10000
+王院长	wang yuan zhang	10000
+王经理	wang jing li	10000
+王书记	wang shu ji	10000
+刘主任	liu zhu ren	15000
+刘医生	liu yi sheng	15000
+刘老师	liu lao shi	15000
+刘总	liu zong	12000
+刘科长	liu ke zhang	10000
+刘院长	liu yuan zhang	10000
+刘经理	liu jing li	10000
+刘书记	liu shu ji	10000
+陈主任	chen zhu ren	15000
+陈医生	chen yi sheng	15000
+陈老师	chen lao shi	15000
+陈总	chen zong	12000
+陈科长	chen ke zhang	10000
+陈院长	chen yuan zhang	10000
+陈经理	chen jing li	10000
+陈书记	chen shu ji	10000
+杨主任	yang zhu ren	15000
+杨医生	yang yi sheng	15000
+杨老师	yang lao shi	15000
+杨总	yang zong	12000
+杨科长	yang ke zhang	10000
+杨院长	yang yuan zhang	10000
+杨经理	yang jing li	10000
+杨书记	yang shu ji	10000
+赵主任	zhao zhu ren	15000
+赵医生	zhao yi sheng	15000
+赵老师	zhao lao shi	15000
+赵总	zhao zong	12000
+赵科长	zhao ke zhang	10000
+赵院长	zhao yuan zhang	10000
+赵经理	zhao jing li	10000
+赵书记	zhao shu ji	10000
+黄主任	huang zhu ren	15000
+黄医生	huang yi sheng	15000
+黄老师	huang lao shi	15000
+黄总	huang zong	12000
+黄科长	huang ke zhang	10000
+黄院长	huang yuan zhang	10000
+黄经理	huang jing li	10000
+黄书记	huang shu ji	10000
+周主任	zhou zhu ren	15000
+周医生	zhou yi sheng	15000
+周老师	zhou lao shi	15000
+周总	zhou zong	12000
+周科长	zhou ke zhang	10000
+周院长	zhou yuan zhang	10000
+周经理	zhou jing li	10000
+周书记	zhou shu ji	10000
+吴主任	wu zhu ren	15000
+吴医生	wu yi sheng	15000
+吴老师	wu lao shi	15000
+吴总	wu zong	12000
+吴科长	wu ke zhang	10000
+吴院长	wu yuan zhang	10000
+吴经理	wu jing li	10000
+吴书记	wu shu ji	10000
+徐主任	xu zhu ren	15000
+徐医生	xu yi sheng	15000
+徐老师	xu lao shi	15000
+徐总	xu zong	12000
+徐科长	xu ke zhang	10000
+徐院长	xu yuan zhang	10000
+徐经理	xu jing li	10000
+徐书记	xu shu ji	10000
+孙主任	sun zhu ren	15000
+孙医生	sun yi sheng	15000
+孙老师	sun lao shi	15000
+孙总	sun zong	12000
+孙科长	sun ke zhang	10000
+孙院长	sun yuan zhang	10000
+孙经理	sun jing li	10000
+孙书记	sun shu ji	10000
+胡主任	hu zhu ren	15000
+胡医生	hu yi sheng	15000
+胡老师	hu lao shi	15000
+胡总	hu zong	12000
+胡科长	hu ke zhang	10000
+胡院长	hu yuan zhang	10000
+胡经理	hu jing li	10000
+胡书记	hu shu ji	10000
+朱主任	zhu zhu ren	15000
+朱医生	zhu yi sheng	15000
+朱老师	zhu lao shi	15000
+朱总	zhu zong	12000
+朱科长	zhu ke zhang	10000
+朱院长	zhu yuan zhang	10000
+朱经理	zhu jing li	10000
+朱书记	zhu shu ji	10000
+高主任	gao zhu ren	15000
+高医生	gao yi sheng	15000
+高老师	gao lao shi	15000
+高总	gao zong	12000
+高科长	gao ke zhang	10000
+高院长	gao yuan zhang	10000
+高经理	gao jing li	10000
+高书记	gao shu ji	10000
+林主任	lin zhu ren	15000
+林医生	lin yi sheng	15000
+林老师	lin lao shi	15000
+林总	lin zong	12000
+林科长	lin ke zhang	10000
+林院长	lin yuan zhang	10000
+林经理	lin jing li	10000
+林书记	lin shu ji	10000
+何主任	he zhu ren	15000
+何医生	he yi sheng	15000
+何老师	he lao shi	15000
+何总	he zong	12000
+何科长	he ke zhang	10000
+何院长	he yuan zhang	10000
+何经理	he jing li	10000
+何书记	he shu ji	10000
+郭主任	guo zhu ren	15000
+郭医生	guo yi sheng	15000
+郭老师	guo lao shi	15000
+郭总	guo zong	12000
+郭科长	guo ke zhang	10000
+郭院长	guo yuan zhang	10000
+郭经理	guo jing li	10000
+郭书记	guo shu ji	10000
+马主任	ma zhu ren	15000
+马医生	ma yi sheng	15000
+马老师	ma lao shi	15000
+马总	ma zong	12000
+马科长	ma ke zhang	10000
+马院长	ma yuan zhang	10000
+马经理	ma jing li	10000
+马书记	ma shu ji	10000
+罗主任	luo zhu ren	15000
+罗医生	luo yi sheng	15000
+罗老师	luo lao shi	15000
+罗总	luo zong	12000
+罗科长	luo ke zhang	10000
+罗院长	luo yuan zhang	10000
+罗经理	luo jing li	10000
+罗书记	luo shu ji	10000
+梁主任	liang zhu ren	15000
+梁医生	liang yi sheng	15000
+梁老师	liang lao shi	15000
+梁总	liang zong	12000
+梁科长	liang ke zhang	10000
+梁院长	liang yuan zhang	10000
+梁经理	liang jing li	10000
+梁书记	liang shu ji	10000
+宋主任	song zhu ren	15000
+宋医生	song yi sheng	15000
+宋老师	song lao shi	15000
+宋总	song zong	12000
+宋科长	song ke zhang	10000
+宋院长	song yuan zhang	10000
+宋经理	song jing li	10000
+宋书记	song shu ji	10000
+郑主任	zheng zhu ren	15000
+郑医生	zheng yi sheng	15000
+郑老师	zheng lao shi	15000
+郑总	zheng zong	12000
+郑科长	zheng ke zhang	10000
+郑院长	zheng yuan zhang	10000
+郑经理	zheng jing li	10000
+郑书记	zheng shu ji	10000
+谢主任	xie zhu ren	15000
+谢医生	xie yi sheng	15000
+谢老师	xie lao shi	15000
+谢总	xie zong	12000
+谢科长	xie ke zhang	10000
+谢院长	xie yuan zhang	10000
+谢经理	xie jing li	10000
+谢书记	xie shu ji	10000
+韩主任	han zhu ren	15000
+韩医生	han yi sheng	15000
+韩老师	han lao shi	15000
+韩总	han zong	12000
+韩科长	han ke zhang	10000
+韩院长	han yuan zhang	10000
+韩经理	han jing li	10000
+韩书记	han shu ji	10000
+唐主任	tang zhu ren	15000
+唐医生	tang yi sheng	15000
+唐老师	tang lao shi	15000
+唐总	tang zong	12000
+唐科长	tang ke zhang	10000
+唐院长	tang yuan zhang	10000
+唐经理	tang jing li	10000
+唐书记	tang shu ji	10000
+冯主任	feng zhu ren	15000
+冯医生	feng yi sheng	15000
+冯老师	feng lao shi	15000
+冯总	feng zong	12000
+冯科长	feng ke zhang	10000
+冯院长	feng yuan zhang	10000
+冯经理	feng jing li	10000
+冯书记	feng shu ji	10000
+于主任	yu zhu ren	15000
+于医生	yu yi sheng	15000
+于老师	yu lao shi	15000
+于总	yu zong	12000
+于科长	yu ke zhang	10000
+于院长	yu yuan zhang	10000
+于经理	yu jing li	10000
+于书记	yu shu ji	10000
+董主任	dong zhu ren	15000
+董医生	dong yi sheng	15000
+董老师	dong lao shi	15000
+董总	dong zong	12000
+董科长	dong ke zhang	10000
+董院长	dong yuan zhang	10000
+董经理	dong jing li	10000
+董书记	dong shu ji	10000
+萧主任	xiao zhu ren	15000
+萧医生	xiao yi sheng	15000
+萧老师	xiao lao shi	15000
+萧总	xiao zong	12000
+萧科长	xiao ke zhang	10000
+萧院长	xiao yuan zhang	10000
+萧经理	xiao jing li	10000
+萧书记	xiao shu ji	10000
+程主任	cheng zhu ren	15000
+程医生	cheng yi sheng	15000
+程老师	cheng lao shi	15000
+程总	cheng zong	12000
+程科长	cheng ke zhang	10000
+程院长	cheng yuan zhang	10000
+程经理	cheng jing li	10000
+程书记	cheng shu ji	10000
+曹主任	cao zhu ren	15000
+曹医生	cao yi sheng	15000
+曹老师	cao lao shi	15000
+曹总	cao zong	12000
+曹科长	cao ke zhang	10000
+曹院长	cao yuan zhang	10000
+曹经理	cao jing li	10000
+曹书记	cao shu ji	10000
+袁主任	yuan zhu ren	15000
+袁医生	yuan yi sheng	15000
+袁老师	yuan lao shi	15000
+袁总	yuan zong	12000
+袁科长	yuan ke zhang	10000
+袁院长	yuan yuan zhang	10000
+袁经理	yuan jing li	10000
+袁书记	yuan shu ji	10000
+邓主任	deng zhu ren	15000
+邓医生	deng yi sheng	15000
+邓老师	deng lao shi	15000
+邓总	deng zong	12000
+邓科长	deng ke zhang	10000
+邓院长	deng yuan zhang	10000
+邓经理	deng jing li	10000
+邓书记	deng shu ji	10000
+许主任	xu zhu ren	15000
+许医生	xu yi sheng	15000
+许老师	xu lao shi	15000
+许总	xu zong	12000
+许科长	xu ke zhang	10000
+许院长	xu yuan zhang	10000
+许经理	xu jing li	10000
+许书记	xu shu ji	10000
+傅主任	fu zhu ren	15000
+傅医生	fu yi sheng	15000
+傅老师	fu lao shi	15000
+傅总	fu zong	12000
+傅科长	fu ke zhang	10000
+傅院长	fu yuan zhang	10000
+傅经理	fu jing li	10000
+傅书记	fu shu ji	10000
+沈主任	shen zhu ren	15000
+沈医生	shen yi sheng	15000
+沈老师	shen lao shi	15000
+沈总	shen zong	12000
+沈科长	shen ke zhang	10000
+沈院长	shen yuan zhang	10000
+沈经理	shen jing li	10000
+沈书记	shen shu ji	10000
+曾主任	zeng zhu ren	15000
+曾医生	zeng yi sheng	15000
+曾老师	zeng lao shi	15000
+曾总	zeng zong	12000
+曾科长	zeng ke zhang	10000
+曾院长	zeng yuan zhang	10000
+曾经理	zeng jing li	10000
+曾书记	zeng shu ji	10000
+彭主任	peng zhu ren	15000
+彭医生	peng yi sheng	15000
+彭老师	peng lao shi	15000
+彭总	peng zong	12000
+彭科长	peng ke zhang	10000
+彭院长	peng yuan zhang	10000
+彭经理	peng jing li	10000
+彭书记	peng shu ji	10000
+吕主任	lv zhu ren	15000
+吕医生	lv yi sheng	15000
+吕老师	lv lao shi	15000
+吕总	lv zong	12000
+吕科长	lv ke zhang	10000
+吕院长	lv yuan zhang	10000
+吕经理	lv jing li	10000
+吕书记	lv shu ji	10000
+苏主任	su zhu ren	15000
+苏医生	su yi sheng	15000
+苏老师	su lao shi	15000
+苏总	su zong	12000
+苏科长	su ke zhang	10000
+苏院长	su yuan zhang	10000
+苏经理	su jing li	10000
+苏书记	su shu ji	10000
+卢主任	lu zhu ren	15000
+卢医生	lu yi sheng	15000
+卢老师	lu lao shi	15000
+卢总	lu zong	12000
+卢科长	lu ke zhang	10000
+卢院长	lu yuan zhang	10000
+卢经理	lu jing li	10000
+卢书记	lu shu ji	10000
+蒋主任	jiang zhu ren	15000
+蒋医生	jiang yi sheng	15000
+蒋老师	jiang lao shi	15000
+蒋总	jiang zong	12000
+蒋科长	jiang ke zhang	10000
+蒋院长	jiang yuan zhang	10000
+蒋经理	jiang jing li	10000
+蒋书记	jiang shu ji	10000
+蔡主任	cai zhu ren	15000
+蔡医生	cai yi sheng	15000
+蔡老师	cai lao shi	15000
+蔡总	cai zong	12000
+蔡科长	cai ke zhang	10000
+蔡院长	cai yuan zhang	10000
+蔡经理	cai jing li	10000
+蔡书记	cai shu ji	10000
+贾主任	jia zhu ren	15000
+贾医生	jia yi sheng	15000
+贾老师	jia lao shi	15000
+贾总	jia zong	12000
+贾科长	jia ke zhang	10000
+贾院长	jia yuan zhang	10000
+贾经理	jia jing li	10000
+贾书记	jia shu ji	10000
+丁主任	ding zhu ren	15000
+丁医生	ding yi sheng	15000
+丁老师	ding lao shi	15000
+丁总	ding zong	12000
+丁科长	ding ke zhang	10000
+丁院长	ding yuan zhang	10000
+丁经理	ding jing li	10000
+丁书记	ding shu ji	10000
+魏主任	wei zhu ren	15000
+魏医生	wei yi sheng	15000
+魏老师	wei lao shi	15000
+魏总	wei zong	12000
+魏科长	wei ke zhang	10000
+魏院长	wei yuan zhang	10000
+魏经理	wei jing li	10000
+魏书记	wei shu ji	10000
+薛主任	xue zhu ren	15000
+薛医生	xue yi sheng	15000
+薛老师	xue lao shi	15000
+薛总	xue zong	12000
+薛科长	xue ke zhang	10000
+薛院长	xue yuan zhang	10000
+薛经理	xue jing li	10000
+薛书记	xue shu ji	10000
+叶主任	ye zhu ren	15000
+叶医生	ye yi sheng	15000
+叶老师	ye lao shi	15000
+叶总	ye zong	12000
+叶科长	ye ke zhang	10000
+叶院长	ye yuan zhang	10000
+叶经理	ye jing li	10000
+叶书记	ye shu ji	10000
+阎主任	yan zhu ren	15000
+阎医生	yan yi sheng	15000
+阎老师	yan lao shi	15000
+阎总	yan zong	12000
+阎科长	yan ke zhang	10000
+阎院长	yan yuan zhang	10000
+阎经理	yan jing li	10000
+阎书记	yan shu ji	10000
+余主任	yu zhu ren	15000
+余医生	yu yi sheng	15000
+余老师	yu lao shi	15000
+余总	yu zong	12000
+余科长	yu ke zhang	10000
+余院长	yu yuan zhang	10000
+余经理	yu jing li	10000
+余书记	yu shu ji	10000
+潘主任	pan zhu ren	15000
+潘医生	pan yi sheng	15000
+潘老师	pan lao shi	15000
+潘总	pan zong	12000
+潘科长	pan ke zhang	10000
+潘院长	pan yuan zhang	10000
+潘经理	pan jing li	10000
+潘书记	pan shu ji	10000
+杜主任	du zhu ren	15000
+杜医生	du yi sheng	15000
+杜老师	du lao shi	15000
+杜总	du zong	12000
+杜科长	du ke zhang	10000
+杜院长	du yuan zhang	10000
+杜经理	du jing li	10000
+杜书记	du shu ji	10000
+戴主任	dai zhu ren	15000
+戴医生	dai yi sheng	15000
+戴老师	dai lao shi	15000
+戴总	dai zong	12000
+戴科长	dai ke zhang	10000
+戴院长	dai yuan zhang	10000
+戴经理	dai jing li	10000
+戴书记	dai shu ji	10000
+夏主任	xia zhu ren	15000
+夏医生	xia yi sheng	15000
+夏老师	xia lao shi	15000
+夏总	xia zong	12000
+夏科长	xia ke zhang	10000
+夏院长	xia yuan zhang	10000
+夏经理	xia jing li	10000
+夏书记	xia shu ji	10000
+钟主任	zhong zhu ren	15000
+钟医生	zhong yi sheng	15000
+钟老师	zhong lao shi	15000
+钟总	zhong zong	12000
+钟科长	zhong ke zhang	10000
+钟院长	zhong yuan zhang	10000
+钟经理	zhong jing li	10000
+钟书记	zhong shu ji	10000
+汪主任	wang zhu ren	15000
+汪医生	wang yi sheng	15000
+汪老师	wang lao shi	15000
+汪总	wang zong	12000
+汪科长	wang ke zhang	10000
+汪院长	wang yuan zhang	10000
+汪经理	wang jing li	10000
+汪书记	wang shu ji	10000
+田主任	tian zhu ren	15000
+田医生	tian yi sheng	15000
+田老师	tian lao shi	15000
+田总	tian zong	12000
+田科长	tian ke zhang	10000
+田院长	tian yuan zhang	10000
+田经理	tian jing li	10000
+田书记	tian shu ji	10000
+任主任	ren zhu ren	15000
+任医生	ren yi sheng	15000
+任老师	ren lao shi	15000
+任总	ren zong	12000
+任科长	ren ke zhang	10000
+任院长	ren yuan zhang	10000
+任经理	ren jing li	10000
+任书记	ren shu ji	10000
+姜主任	jiang zhu ren	15000
+姜医生	jiang yi sheng	15000
+姜老师	jiang lao shi	15000
+姜总	jiang zong	12000
+姜科长	jiang ke zhang	10000
+姜院长	jiang yuan zhang	10000
+姜经理	jiang jing li	10000
+姜书记	jiang shu ji	10000
+范主任	fan zhu ren	15000
+范医生	fan yi sheng	15000
+范老师	fan lao shi	15000
+范总	fan zong	12000
+范科长	fan ke zhang	10000
+范院长	fan yuan zhang	10000
+范经理	fan jing li	10000
+范书记	fan shu ji	10000
+方主任	fang zhu ren	15000
+方医生	fang yi sheng	15000
+方老师	fang lao shi	15000
+方总	fang zong	12000
+方科长	fang ke zhang	10000
+方院长	fang yuan zhang	10000
+方经理	fang jing li	10000
+方书记	fang shu ji	10000
+石主任	shi zhu ren	15000
+石医生	shi yi sheng	15000
+石老师	shi lao shi	15000
+石总	shi zong	12000
+石科长	shi ke zhang	10000
+石院长	shi yuan zhang	10000
+石经理	shi jing li	10000
+石书记	shi shu ji	10000
+姚主任	yao zhu ren	15000
+姚医生	yao yi sheng	15000
+姚老师	yao lao shi	15000
+姚总	yao zong	12000
+姚科长	yao ke zhang	10000
+姚院长	yao yuan zhang	10000
+姚经理	yao jing li	10000
+姚书记	yao shu ji	10000
+谭主任	tan zhu ren	15000
+谭医生	tan yi sheng	15000
+谭老师	tan lao shi	15000
+谭总	tan zong	12000
+谭科长	tan ke zhang	10000
+谭院长	tan yuan zhang	10000
+谭经理	tan jing li	10000
+谭书记	tan shu ji	10000
+廖主任	liao zhu ren	15000
+廖医生	liao yi sheng	15000
+廖老师	liao lao shi	15000
+廖总	liao zong	12000
+廖科长	liao ke zhang	10000
+廖院长	liao yuan zhang	10000
+廖经理	liao jing li	10000
+廖书记	liao shu ji	10000
+邹主任	zou zhu ren	15000
+邹医生	zou yi sheng	15000
+邹老师	zou lao shi	15000
+邹总	zou zong	12000
+邹科长	zou ke zhang	10000
+邹院长	zou yuan zhang	10000
+邹经理	zou jing li	10000
+邹书记	zou shu ji	10000
+熊主任	xiong zhu ren	15000
+熊医生	xiong yi sheng	15000
+熊老师	xiong lao shi	15000
+熊总	xiong zong	12000
+熊科长	xiong ke zhang	10000
+熊院长	xiong yuan zhang	10000
+熊经理	xiong jing li	10000
+熊书记	xiong shu ji	10000
+金主任	jin zhu ren	15000
+金医生	jin yi sheng	15000
+金老师	jin lao shi	15000
+金总	jin zong	12000
+金科长	jin ke zhang	10000
+金院长	jin yuan zhang	10000
+金经理	jin jing li	10000
+金书记	jin shu ji	10000
+陆主任	lu zhu ren	15000
+陆医生	lu yi sheng	15000
+陆老师	lu lao shi	15000
+陆总	lu zong	12000
+陆科长	lu ke zhang	10000
+陆院长	lu yuan zhang	10000
+陆经理	lu jing li	10000
+陆书记	lu shu ji	10000
+郝主任	hao zhu ren	15000
+郝医生	hao yi sheng	15000
+郝老师	hao lao shi	15000
+郝总	hao zong	12000
+郝科长	hao ke zhang	10000
+郝院长	hao yuan zhang	10000
+郝经理	hao jing li	10000
+郝书记	hao shu ji	10000
+孔主任	kong zhu ren	15000
+孔医生	kong yi sheng	15000
+孔老师	kong lao shi	15000
+孔总	kong zong	12000
+孔科长	kong ke zhang	10000
+孔院长	kong yuan zhang	10000
+孔经理	kong jing li	10000
+孔书记	kong shu ji	10000
+白主任	bai zhu ren	15000
+白医生	bai yi sheng	15000
+白老师	bai lao shi	15000
+白总	bai zong	12000
+白科长	bai ke zhang	10000
+白院长	bai yuan zhang	10000
+白经理	bai jing li	10000
+白书记	bai shu ji	10000
+崔主任	cui zhu ren	15000
+崔医生	cui yi sheng	15000
+崔老师	cui lao shi	15000
+崔总	cui zong	12000
+崔科长	cui ke zhang	10000
+崔院长	cui yuan zhang	10000
+崔经理	cui jing li	10000
+崔书记	cui shu ji	10000
+康主任	kang zhu ren	15000
+康医生	kang yi sheng	15000
+康老师	kang lao shi	15000
+康总	kang zong	12000
+康科长	kang ke zhang	10000
+康院长	kang yuan zhang	10000
+康经理	kang jing li	10000
+康书记	kang shu ji	10000
+毛主任	mao zhu ren	15000
+毛医生	mao yi sheng	15000
+毛老师	mao lao shi	15000
+毛总	mao zong	12000
+毛科长	mao ke zhang	10000
+毛院长	mao yuan zhang	10000
+毛经理	mao jing li	10000
+毛书记	mao shu ji	10000
+邱主任	qiu zhu ren	15000
+邱医生	qiu yi sheng	15000
+邱老师	qiu lao shi	15000
+邱总	qiu zong	12000
+邱科长	qiu ke zhang	10000
+邱院长	qiu yuan zhang	10000
+邱经理	qiu jing li	10000
+邱书记	qiu shu ji	10000
+秦主任	qin zhu ren	15000
+秦医生	qin yi sheng	15000
+秦老师	qin lao shi	15000
+秦总	qin zong	12000
+秦科长	qin ke zhang	10000
+秦院长	qin yuan zhang	10000
+秦经理	qin jing li	10000
+秦书记	qin shu ji	10000
+江主任	jiang zhu ren	15000
+江医生	jiang yi sheng	15000
+江老师	jiang lao shi	15000
+江总	jiang zong	12000
+江科长	jiang ke zhang	10000
+江院长	jiang yuan zhang	10000
+江经理	jiang jing li	10000
+江书记	jiang shu ji	10000
+史主任	shi zhu ren	15000
+史医生	shi yi sheng	15000
+史老师	shi lao shi	15000
+史总	shi zong	12000
+史科长	shi ke zhang	10000
+史院长	shi yuan zhang	10000
+史经理	shi jing li	10000
+史书记	shi shu ji	10000
+顾主任	gu zhu ren	15000
+顾医生	gu yi sheng	15000
+顾老师	gu lao shi	15000
+顾总	gu zong	12000
+顾科长	gu ke zhang	10000
+顾院长	gu yuan zhang	10000
+顾经理	gu jing li	10000
+顾书记	gu shu ji	10000
+侯主任	hou zhu ren	15000
+侯医生	hou yi sheng	15000
+侯老师	hou lao shi	15000
+侯总	hou zong	12000
+侯科长	hou ke zhang	10000
+侯院长	hou yuan zhang	10000
+侯经理	hou jing li	10000
+侯书记	hou shu ji	10000
+邵主任	shao zhu ren	15000
+邵医生	shao yi sheng	15000
+邵老师	shao lao shi	15000
+邵总	shao zong	12000
+邵科长	shao ke zhang	10000
+邵院长	shao yuan zhang	10000
+邵经理	shao jing li	10000
+邵书记	shao shu ji	10000
+孟主任	meng zhu ren	15000
+孟医生	meng yi sheng	15000
+孟老师	meng lao shi	15000
+孟总	meng zong	12000
+孟科长	meng ke zhang	10000
+孟院长	meng yuan zhang	10000
+孟经理	meng jing li	10000
+孟书记	meng shu ji	10000
+龙主任	long zhu ren	15000
+龙医生	long yi sheng	15000
+龙老师	long lao shi	15000
+龙总	long zong	12000
+龙科长	long ke zhang	10000
+龙院长	long yuan zhang	10000
+龙经理	long jing li	10000
+龙书记	long shu ji	10000
+万主任	wan zhu ren	15000
+万医生	wan yi sheng	15000
+万老师	wan lao shi	15000
+万总	wan zong	12000
+万科长	wan ke zhang	10000
+万院长	wan yuan zhang	10000
+万经理	wan jing li	10000
+万书记	wan shu ji	10000
+段主任	duan zhu ren	15000
+段医生	duan yi sheng	15000
+段老师	duan lao shi	15000
+段总	duan zong	12000
+段科长	duan ke zhang	10000
+段院长	duan yuan zhang	10000
+段经理	duan jing li	10000
+段书记	duan shu ji	10000
+钱主任	qian zhu ren	15000
+钱医生	qian yi sheng	15000
+钱老师	qian lao shi	15000
+钱总	qian zong	12000
+钱科长	qian ke zhang	10000
+钱院长	qian yuan zhang	10000
+钱经理	qian jing li	10000
+钱书记	qian shu ji	10000
+汤主任	tang zhu ren	15000
+汤医生	tang yi sheng	15000
+汤老师	tang lao shi	15000
+汤总	tang zong	12000
+汤科长	tang ke zhang	10000
+汤院长	tang yuan zhang	10000
+汤经理	tang jing li	10000
+汤书记	tang shu ji	10000
+尹主任	yin zhu ren	15000
+尹医生	yin yi sheng	15000
+尹老师	yin lao shi	15000
+尹总	yin zong	12000
+尹科长	yin ke zhang	10000
+尹院长	yin yuan zhang	10000
+尹经理	yin jing li	10000
+尹书记	yin shu ji	10000
+黎主任	li zhu ren	15000
+黎医生	li yi sheng	15000
+黎老师	li lao shi	15000
+黎总	li zong	12000
+黎科长	li ke zhang	10000
+黎院长	li yuan zhang	10000
+黎经理	li jing li	10000
+黎书记	li shu ji	10000
+易主任	yi zhu ren	15000
+易医生	yi yi sheng	15000
+易老师	yi lao shi	15000
+易总	yi zong	12000
+易科长	yi ke zhang	10000
+易院长	yi yuan zhang	10000
+易经理	yi jing li	10000
+易书记	yi shu ji	10000
+常主任	chang zhu ren	15000
+常医生	chang yi sheng	15000
+常老师	chang lao shi	15000
+常总	chang zong	12000
+常科长	chang ke zhang	10000
+常院长	chang yuan zhang	10000
+常经理	chang jing li	10000
+常书记	chang shu ji	10000
+武主任	wu zhu ren	15000
+武医生	wu yi sheng	15000
+武老师	wu lao shi	15000
+武总	wu zong	12000
+武科长	wu ke zhang	10000
+武院长	wu yuan zhang	10000
+武经理	wu jing li	10000
+武书记	wu shu ji	10000
+乔主任	qiao zhu ren	15000
+乔医生	qiao yi sheng	15000
+乔老师	qiao lao shi	15000
+乔总	qiao zong	12000
+乔科长	qiao ke zhang	10000
+乔院长	qiao yuan zhang	10000
+乔经理	qiao jing li	10000
+乔书记	qiao shu ji	10000
+贺主任	he zhu ren	15000
+贺医生	he yi sheng	15000
+贺老师	he lao shi	15000
+贺总	he zong	12000
+贺科长	he ke zhang	10000
+贺院长	he yuan zhang	10000
+贺经理	he jing li	10000
+贺书记	he shu ji	10000
+赖主任	lai zhu ren	15000
+赖医生	lai yi sheng	15000
+赖老师	lai lao shi	15000
+赖总	lai zong	12000
+赖科长	lai ke zhang	10000
+赖院长	lai yuan zhang	10000
+赖经理	lai jing li	10000
+赖书记	lai shu ji	10000
+龚主任	gong zhu ren	15000
+龚医生	gong yi sheng	15000
+龚老师	gong lao shi	15000
+龚总	gong zong	12000
+龚科长	gong ke zhang	10000
+龚院长	gong yuan zhang	10000
+龚经理	gong jing li	10000
+龚书记	gong shu ji	10000
+文主任	wen zhu ren	15000
+文医生	wen yi sheng	15000
+文老师	wen lao shi	15000
+文总	wen zong	12000
+文科长	wen ke zhang	10000
+文院长	wen yuan zhang	10000
+文经理	wen jing li	10000
+文书记	wen shu ji	10000

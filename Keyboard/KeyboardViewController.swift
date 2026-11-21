@@ -1783,6 +1783,7 @@ final class KeyboardViewController: UIInputViewController {
     /// 这次拼字（输入串从有到空）选出来的几段：（文字, 吃掉的拼音字母, 切词）
     private var session: [(text: String, key: String, parts: [String])] = []
     private var sessionPrev: String?           // 这次拼字前面的上文最后一个词
+    private var lastCommit: (text: String, key: String, time: Date)?  // 上一次刚落下的词（连续打字自造词：肖 + 主任 → 肖主任）
     private var userSave: DispatchWorkItem?
     private var lexMoved = false               // 这个键盘实例已经为「词库词挪出学习文件」取过一次词库
 
@@ -1860,17 +1861,22 @@ final class KeyboardViewController: UIInputViewController {
         userSave?.cancel()
         let w = DispatchWorkItem { [weak self] in self?.saveUser() }
         userSave = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: w)
     }
 
-    private func saveUser() {
+    private func saveUser(sync: Bool = false) {
         userSave?.cancel()
         userSave = nil
         guard let u = engine?.user else { return }
         let url = Self.userFile
-        onEngine {
+        let block = {
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? u.dump().write(to: url, atomically: true, encoding: .utf8)
+        }
+        if sync {
+            engineQueue.sync(execute: block)
+        } else {
+            onEngine(block)
         }
     }
 
@@ -1891,6 +1897,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func clearLearned() {
+        lastCommit = nil
         userSave?.cancel()
         userSave = nil
         let e = engine, on = learnOn, url = Self.userFile
@@ -2019,7 +2026,7 @@ final class KeyboardViewController: UIInputViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         flushWatch()
-        if userSave != nil { saveUser() }      // 键盘收起：没来得及存的学习记录马上存（扩展随时可能被系统结束）
+        saveUser(sync: true)      // 键盘收起：强制同步存盘，防止扩展被系统杀死导致学习记录丢失
         if let r = rootView {
             r.cancelAll()
             // 看「按了没反应」是哪一种：没按到键 / 被系统取消 / 滑过去改 / 根本没送到接线板（触点流水里没有它）
@@ -3278,6 +3285,23 @@ final class KeyboardViewController: UIInputViewController {
         let zh = ps.filter { $0.cand.text.unicodeScalars.contains(where: { (0x4E00...0x9FFF).contains($0.value) }) }      // 混输的英文词、表情不进中文个人学习
         for (i, p) in zh.enumerated() {
             noteCommit(p.cand, letters: p.letters.replacingOccurrences(of: "'", with: ""), last: i == zh.count - 1)
+        }
+        // 连续打字自造词：用户连续两次上屏（如先打「肖」再打「主任」），间隔在 5 秒内，自动合成自造词
+        if let u = engine?.user, zh.count == 1, let first = zh.first {
+            let curText = first.cand.text
+            let curKey = first.letters.replacingOccurrences(of: "'", with: "").lowercased()
+            let now = Date()
+            if let last = lastCommit, now.timeIntervalSince(last.time) <= 5.0 {
+                let combText = last.text + curText
+                let combKey = Array((last.key + curKey).utf8)
+                if (2...6).contains(combText.unicodeScalars.count), !(engine?.hasWord(combKey, combText) ?? false) {
+                    onEngine { u.addPhrase(key: combKey, word: combText) }
+                    scheduleUserSave()
+                }
+            }
+            lastCommit = (curText, curKey, now)
+        } else if zh.count > 1 {
+            lastCommit = nil
         }
     }
 
