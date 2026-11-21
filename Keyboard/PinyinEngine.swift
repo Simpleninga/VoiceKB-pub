@@ -264,11 +264,14 @@ final class PinyinEngine {
         key.withUnsafeBufferPointer { dict.exact($0.baseAddress!, key.count) }.contains { dict.word($0) == word }
     }
 
-    /// 这个拼音有没有常用整词（不冷僻：权重 ≥ weakQ），except 里的不算：词库词撞上了就让常用词排第一、自己排第二
+    /// 常用词阈值：词库词撞上特别常用的整词（可是、我们、知道）才退居第二
+    static let commonQ = Int(9.5 * 2048)
+
+    /// 这个拼音有没有常用整词（不冷僻：权重 ≥ commonQ），except 里的不算：词库词撞上了就让常用词排第一、自己排第二
     func hasCommonWord(_ key: String, except: [String]) -> Bool {
         let k = Array(key.utf8)
         guard !k.isEmpty else { return false }
-        return k.withUnsafeBufferPointer { dict.exact($0.baseAddress!, k.count) }.contains { dict.rawWeight($0) >= Self.weakQ && !except.contains(dict.word($0)) }
+        return k.withUnsafeBufferPointer { dict.exact($0.baseAddress!, k.count) }.contains { dict.rawWeight($0) >= Self.commonQ && !except.contains(dict.word($0)) }
     }
 
     /// 语言模型里有没有这个词（上文是不是个词）
